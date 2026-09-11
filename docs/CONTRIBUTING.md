@@ -10,7 +10,13 @@ Follow the [checkout instructions](../README.md#local-development). To submit ch
 git switch -c docs/clarify-onboarding
 ```
 
-Choose a branch name describing your own change. Git and a Markdown editor are sufficient for documentation work; the repository does not yet have a runnable plugin or package tooling. No API credentials are needed for editing docs.
+Choose a branch name describing your own change. Plugin work requires [Node.js](https://nodejs.org/) `^22.19.0` or `>=24.0.0` and [pnpm](https://pnpm.io/). Install dependencies after cloning:
+
+```sh
+pnpm install
+```
+
+No API credentials are needed for documentation or the bootstrap test suite.
 
 ## Find the right context
 
@@ -32,7 +38,13 @@ git diff --check
 
 This checks whitespace only, not links, technical accuracy or plugin behavior. Review the rendered Markdown and verify affected references separately.
 
-For code, follow the engineering guide's [verification requirements](engineering.md#verification-by-changed-surface). The change introducing build tooling must also document its real prerequisites and commands. Run the relevant checks and report exactly what ran; do not substitute upstream DSH tests for this plugin's integration evidence. Live-provider tests require explicitly authorized resources and spending.
+For code, follow the engineering guide's [verification requirements](engineering.md#verification-by-changed-surface). Run the complete local bootstrap gate before submitting:
+
+```sh
+pnpm run check
+```
+
+Use `pnpm test -- tests/<name>.spec.ts` while iterating on one behavior. Package or export changes also require `mkdir -p .artifacts`, `pnpm pack --pack-destination .artifacts`, and `pnpm run verify:package`; the last command installs the tarball into a disposable DSH profile and verifies the effective bundle layer. Report exactly what ran; do not substitute upstream DSH tests for this plugin's integration evidence. Live-provider tests require explicitly authorized resources and spending.
 
 ## Submit a pull request
 

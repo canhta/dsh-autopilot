@@ -12,7 +12,7 @@ Before introducing replacement infrastructure, record the exact missing behavior
 
 ## Cordis lifecycle
 
-- Export a plugin `apply(ctx)` and a runtime `Config` schema. Use service injection for activation dependencies; YAML row order does not determine plugin startup order.
+- Export a plugin `apply(ctx)` and add a runtime `Config` schema when the plugin first accepts configuration. Use service injection for activation dependencies; YAML row order does not determine plugin startup order.
 - A missing required service leaves a consumer PENDING. Service withdrawal unloads dependent consumers; replacement remounts them. Startup readiness must detect missing required contributions instead of reporting a functioning scheduler merely because the process is alive.
 - Use stable patch row ids and distinctive Autopilot service/event names. The official `@deepseek-ai` npm scope belongs to upstream; publish this project under an available community name such as `dsh-autopilot` or an owner scope.
 - Cordis already owns listeners registered with `ctx.on` and child plugins registered with `ctx.plugin`. Acquire external timers, database handles, watchers and subscriptions through effect-owned lifetimes and return their disposers. Check a registry's registration contract before adding redundant cleanup.
@@ -27,7 +27,7 @@ Distribute a bundle declaring `dsh.bundle.patch` and exporting its Host code. A 
 
 Patch layers replace an entire row's `config`; they do not deep-merge keys. Schema defaults and Settings overrides are different mechanisms. Document effective configuration using those actual semantics. `!!js` applies only under config/disabled and is trusted deployment code, not a syntax for ticket-controlled input.
 
-Use explicit dependency versions compatible with a recorded DSH cohort. Avoid `workspace:` dependencies or build paths into a developer's upstream checkout. Follow package exports and declared Host/Client faces, not unexported source paths.
+The initial deployment follows the npm `latest` tag for DSH. Keep the manifest tag-based and let the committed lockfile record the exact development cohort that passed verification; record the resolved DSH version with every artifact acceptance run. Use explicit compatible peer ranges, avoid `workspace:` dependencies or paths into a developer's upstream checkout, and follow package exports and declared Host/Client faces rather than unexported source paths.
 
 A Web package declares `dsh.client.platform: web`, exports `./client`, and builds the runtime's lazy factory registration format. Ordinary browser ESM output is insufficient at this baseline. Share the runtime's React/Cordis baseline; declare exact non-baseline externals. `dsh.client.inject` metadata is not runtime service injection.
 
