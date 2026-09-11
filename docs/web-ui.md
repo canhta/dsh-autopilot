@@ -1,0 +1,116 @@
+# Web UI
+
+## Placement and data
+
+Add `AIDLC Operations` as a global DSH Web sidebar entry. The panel works without selecting a conversation. Settings are a separate DSH Settings contribution; link to them from Operations rather than building two configuration editors.
+
+The default view is Queue & Runs, not a metrics dashboard. Use five local tabs: Queue & Runs, Schedule, Budget, Notifications, Worktrees. Keep provider and policy editing in DSH Settings. Do not add a second app-wide sidebar. [UI components](ui-components.md) owns the exact module/component responsibilities and query/command behavior.
+
+The supported extension points and remote configuration restrictions are owned by [plugin engineering](plugin-engineering.md). Resolve D6 before claiming the Settings editor works through a VPS public URL. Its placement and its ability to persist settings are separate capabilities.
+
+Host state is authoritative. The browser reads revisioned snapshots/updates and submits narrow operator commands. On reconnect fetch current state before enabling stale actions. Persist view preferences only in browser storage. Every mutation reports accepted/pending/succeeded/rejected status; a button click is not proof of execution success.
+
+## Operations views
+
+| View | Required content |
+| --- | --- |
+| Header summary (not a separate tab) | Scheduler mode, capacity and actionable attention count; show integration/recovery problems only when relevant |
+| Queue & Runs | tracker key/summary, priority, queue order, run state, reported phase, elapsed time, spend qualification, latest meaningful event |
+| Schedules | Effective enabled state, cadence/windows/timezone, next occurrence and recent reconciliation results; link to edit settings |
+| Budget | Provider balance when available; enforced cap, settled/reserved/remaining values, unknown coverage, warnings and paused runs |
+| Notifications | Destination labels, event/delivery history, pending/retrying/exhausted state, last sanitized error and retry action |
+| Worktrees | Run/tracker association, branch, activity, Git changes, remote/PR state, disk usage, cleanup eligibility and preview |
+
+Use a table for runs with filters by state/priority/age; a Kanban board and drag-and-drop scheduling are outside the initial UI. The [lifecycle](lifecycle.md) owns statuses and order. Distinguish human blockers from operational pauses, and execution completion from notification delivery problems. Avoid invented completion percentages for an agent's unknown remaining work.
+
+Task details show the Brief snapshot, tracker dependencies/questions, event timeline, DSH Session link, worktree/branch, verification evidence, PR link, budget breakdown and delivery history. Expand diagnostic IDs/logs only when requested.
+
+## Layout and visual direction
+
+**Proposed visual specification:** a restrained operational tool integrated into DSH, with strong text hierarchy, aligned rows and generous space around decisions. The existing DSH theme and components are authoritative; numeric values below are fallback layout targets, not invented upstream token names. Validate against the actual shell before fixing CSS.
+
+At wide desktop widths, selecting a run opens a nonmodal detail region beside the list and preserves list filters/scroll. Give the detail approximately 420–480 px only when the remaining list stays readable; otherwise use the full-width detail view with Back to runs. At narrow widths show ticket, state/reason and priority first; secondary columns move into details rather than squeezing unreadable cells. Use one overlay at a time; cleanup confirmation may replace an inspector overlay, not stack three dialogs.
+
+```text
+DSH shell / existing navigation
+┌─────────────────────────────────────────────────────────────────┐
+│ AIDLC Operations · project/provider        Running  [Pause]  ⋯   │
+│ Conditional attention: one blocker / access issue → action       │
+│ Queue & Runs | Schedule | Budget | Notifications | Worktrees      │
+├───────────────────────────────────────┬─────────────────────────┤
+│ Search · state · priority · attention │ Ticket · state · links  │
+│ Ticket / state / phase / spend        │ Required action or PR   │
+│ … run rows …                          │ Evidence / timeline     │
+│ Page controls                         │ Secondary details       │
+└───────────────────────────────────────┴─────────────────────────┘
+```
+
+| Visual rule | Implementation requirement |
+| --- | --- |
+| Surfaces | Inherit DSH page/panel/input surfaces and borders. No decorative gradients, glass blur, neon glow, hero banner or nested card around every field. |
+| Type | Inherit DSH font; use a compact hierarchy around 20 px page title, 14 px body/table and 12 px metadata where host tokens permit. Monospace only for paths, branch/commit ids and diagnostics; tabular numerals for aligned numbers. |
+| Spacing | Use the host spacing scale; fallback 4/8/12/16/24 px. Aim for 16–24 px panel padding and 44–48 px readable rows. Avoid both giant empty cards and dense multi-line badge clusters. |
+| Color | One inherited accent for active navigation/primary action. Neutral queued/paused/completed labels; accent implementing; amber human attention; red failure/destructive action. Pair every color with readable text and an icon where useful. A completed run with failed delivery shows both facts. |
+| Controls | One primary action per region. Label consequential actions; icon-only controls need accessible names and tooltips. No ornamental emoji or duplicate buttons scattered across cards. |
+| Motion | Subtle host-standard transitions only; honor reduced motion. No pulsing whole rows, animated counters or auto-scrolling timelines. |
+| Data | No synthetic productivity scores, token-saving claims, trend charts without data or fake progress. Use compact text/table for counts, next schedule and spend; visual meters require a meaningful denominator. |
+
+Use sample content long enough to reveal layout failures: long issue titles, multi-line blockers, large numbers, long branch names and non-English labels. Truncate only previews with an accessible full-value path; never hide the blocking reason, money qualification or destructive target. Dynamic updates must not reorder the row currently focused without a deliberate refresh path.
+
+## Primary interaction paths
+
+1. **First setup:** show what is missing and a Configure action; do not render a fake successful overview. Settings guides provider/project selection, mappings, execution/budget and notifications through section validation, not a mandatory new account/onboarding product. Valid setup does not silently enable spending; scheduler activation is explicit.
+2. **Normal operation:** enter Runs, identify current/waiting work, select a row, inspect evidence, open the external ticket/Session/PR. Closing detail restores list position.
+3. **Human blocker:** attention filter → selected run → questions and Open in the configured tracker. A reply alone does not clear the banner. Display observed authorization/eligibility only after Host confirmation.
+4. **Budget/schedule pause:** show the limiting condition and a link to its Settings section. Saving a limit is not proof of resumption; reflect queue/dispatch state from the Host.
+5. **Cleanup:** Worktrees → inspect exact target → preview with reasons → confirm → show actual result. A changed run/Git state invalidates the preview.
+6. **Provider change:** Settings explains dependent runs/intents and refuses an unsafe switch; do not offer a migration wizard or silently move history to another provider.
+
+## Operator actions
+
+| Action | Visible behavior |
+| --- | --- |
+| Pause scheduler | Explains that active work is pausing; displays unfinished pauses until checkpointed |
+| Resume scheduler | Re-evaluates paused/queued work through normal gates |
+| Drain | Stops new admission/dequeue while current runs finish |
+| Reconcile now | Fetches current tracker state under ordinary admission policy |
+| Cancel run | Available for quiescent queued/paused/blocked runs; retains worktree/history and cannot silently requeue on an unchanged tracker poll |
+| Stop at checkpoint | Requests an operational pause and durable operator hold for the selected run |
+| Resume paused run | Clears that run's operator hold and queues continuation only if all other gates permit; otherwise shows the unmet condition |
+| Retry notification | Retries selected delivery without repeating code execution |
+| Cleanup worktree | Shows exact removal preview and rejection reasons before confirmation |
+| Open ticket / Session / PR | Opens the associated system record |
+
+A blocked run shows `Waiting for a human in {trackerName}`, its questions and `Open in {trackerName}`. Human unblock authorization stays on tracker. Display the reason for unavailable actions; do not silently ignore them. Destructive cleanup requires confirmation of the preview, while ordinary reads do not.
+
+Audit mutations with operator identity if supplied by authentication, timestamp, request id, target and resulting state/revision. See [operations](operations.md) for the one-role access model.
+
+## Settings and interaction states
+
+Group the fields from [operations configuration](operations.md) by providers/project/target, schedule/capacity, DSH execution, budget, notifications and retention. Show defaults/effective values and validate before saving. Concurrent stale edits receive a conflict and reload path instead of overwriting newer settings.
+
+Render provider selection and configuration from registered provider metadata/schema contributions; the shell must not hardcode a Jira/GitHub-only form. Show provider identity on issue/PR links and historical runs. Unsupported required capabilities prevent activation with a specific reason. Changing providers follows the binding-switch rules in [provider architecture](provider-architecture.md).
+
+Show credentials as configured/missing/error, never existing secret values. Channel settings support test delivery with explicit test labeling; sending a test is an operator action. Display a payload preview and disclosure setting without copying private execution content automatically.
+
+For each view implement loading, empty, unavailable, stale/disconnected and recoverable-error states. For metering use `Unknown` or `Metering` until evidence arrives. Keep local times accompanied by the scheduler timezone where scheduling decisions depend on it. Support keyboard navigation, labelled controls, readable focus, responsive layouts and DSH locale/theme conventions.
+
+## Acceptance scenarios and references
+
+Before accepting Client implementation, collect screenshots within the real DSH shell at 1440×900, 1024×768 and 390×844, in light and dark themes. Include populated runs + selected details, human blocker, budget pause, failed delivery, cleanup preview/rejection, provider Settings and empty/disconnected states. These are review deliverables for implementation, not evidence already produced.
+
+Check legibility and consistent alignment without page-level horizontal overflow; all important actions work with keyboard, visible focus and appropriate dialog focus return. Verify normal text contrast of at least 4.5:1 and meaningful non-text control contrast of 3:1, plus status comprehension without color. Test reduced motion, zoom/reflow, long localized copy and screen-reader names/live feedback. Review screenshots against the visual table above; reject the change if it introduces an unrelated design system or obscures operational decisions.
+
+- Switching between Jira/Linear and GitHub/Bitbucket changes provider fields and link labels without changing run behavior.
+- An external provider registers settings without modifying the core UI; missing Client enhancement still leaves a usable validated form.
+- Open Operations with no Session selected and inspect queue/health.
+- Disable scheduler while work is active; show pausing until Host acknowledgement.
+- Reconnect after a run finishes; display its current state without replaying an old operator command.
+- A blocker has no Web action that bypasses tracker authorization.
+- Completed PR plus failed ntfy delivery is presented as completion with a delivery issue.
+- Unknown budget or PR state is distinguishable from zero usage or a closed PR.
+- A cleanup rejection explains which Git/run condition prevents removal.
+
+Primary sources: [DSH layout](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/client/ui-layout/README.md), [Client modules](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/client/modules/README.md), [Settings](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/client/ui-settings/README.md).
+
+Community patterns: [taskboard](https://github.com/cloader/dsh-taskboard) for evidence and task details, [task status](https://github.com/vlln/dsh-task-status) for compact live feedback, [activity pane](https://github.com/ccll/dsh-activity-pane) for attention states. These are interaction references, not dependencies to install automatically.
