@@ -1,7 +1,7 @@
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join, resolve } from 'node:path'
-import { spawnSync } from 'node:child_process'
 
 const packagePath = process.argv[2]
 if (!packagePath) throw new Error('usage: verify-package.mjs <package.tgz>')
@@ -26,7 +26,15 @@ function run(command, args) {
 }
 
 try {
-  run(npx, ['--yes', '@deepseek-ai/dsh@latest', '--profile', 'autopilot-package-smoke', '--from-default-profile', 'web', '--dump-config'])
+  run(npx, [
+    '--yes',
+    '@deepseek-ai/dsh@latest',
+    '--profile',
+    'autopilot-package-smoke',
+    '--from-default-profile',
+    'web',
+    '--dump-config',
+  ])
   run(npx, ['--yes', '@deepseek-ai/dsh@latest', 'plugin', '--profile', 'autopilot-package-smoke', 'add', artifact])
   run(pnpm, ['--dir', profile, 'peers', 'check'])
   const config = run(npx, ['--yes', '@deepseek-ai/dsh@latest', '--profile', 'autopilot-package-smoke', '--dump-config'])

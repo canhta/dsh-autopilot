@@ -21,15 +21,18 @@
   "scripts": {
     "clean": "node --eval \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
     "build": "pnpm run clean && tsc -p tsconfig.build.json",
+    "format": "biome check --write .",
+    "lint": "biome ci .",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "check": "pnpm run typecheck && pnpm run test && pnpm run build",
+    "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
+    "hooks:install": "lefthook install",
     "verify:package": "node scripts/verify-package.mjs .artifacts/dsh-autopilot-0.0.0.tgz",
     "prepare": "pnpm run build",
-    "prepack": "pnpm run typecheck && pnpm run test"
+    "prepack": "pnpm run lint && pnpm run typecheck && pnpm run test"
   },
   "engines": {
-    "node": "^22.19.0 || >=24.0.0"
+    "node": ">=24.0.0"
   },
   "repository": {
     "type": "git",
@@ -40,11 +43,11 @@
   },
   "homepage": "https://github.com/canhta/dsh-autopilot#readme",
   "keywords": [
+    "ai-agent",
     "deepseek",
-    "deepseek-harness",
-    "dsh",
-    "aidlc",
-    "automation"
+    "dsh-plugin",
+    "self-hosted",
+    "workflow-automation"
   ],
   "license": "MIT",
   "dsh": {
@@ -52,8 +55,13 @@
       "patch": "./cordis.patch.yml"
     }
   },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.2"
+  },
   "devDependencies": {
+    "@biomejs/biome": "latest",
     "@deepseek-ai/cordis": "latest",
+    "lefthook": "latest",
     "typescript": "latest",
     "vitest": "latest"
   }

@@ -55,7 +55,7 @@ This is an issue-driven AI Development Lifecycle (AIDLC) flow for **one project 
 
 The bootstrap can be installed from a locally packed artifact. It does not yet automate tickets, so no Jira, GitHub or model credential is required for this verification path.
 
-Prerequisites: Git, [Node.js](https://nodejs.org/) `^22.19.0` or `>=24.0.0`, and [pnpm](https://pnpm.io/). DSH itself is invoked from the npm `latest` tag.
+Prerequisites: Git, [Node.js](https://nodejs.org/) 24 or newer, and [pnpm](https://pnpm.io/). DSH itself is invoked from the npm `latest` tag.
 
 ```sh
 git clone https://github.com/canhta/dsh-autopilot.git
@@ -82,6 +82,7 @@ Install the checkout and run all local gates:
 git clone https://github.com/canhta/dsh-autopilot.git
 cd dsh-autopilot
 pnpm install
+pnpm run hooks:install
 pnpm run check
 mkdir -p .artifacts
 pnpm pack --pack-destination .artifacts

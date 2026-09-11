@@ -10,10 +10,11 @@ Follow the [checkout instructions](../README.md#local-development). To submit ch
 git switch -c docs/clarify-onboarding
 ```
 
-Choose a branch name describing your own change. Plugin work requires [Node.js](https://nodejs.org/) `^22.19.0` or `>=24.0.0` and [pnpm](https://pnpm.io/). Install dependencies after cloning:
+Choose a branch name describing your own change. Plugin work requires [Node.js](https://nodejs.org/) 24 or newer and [pnpm](https://pnpm.io/). Install dependencies after cloning:
 
 ```sh
 pnpm install
+pnpm run hooks:install
 ```
 
 No API credentials are needed for documentation or the bootstrap test suite.
@@ -45,6 +46,8 @@ pnpm run check
 ```
 
 Use `pnpm test -- tests/<name>.spec.ts` while iterating on one behavior. Package or export changes also require `mkdir -p .artifacts`, `pnpm pack --pack-destination .artifacts`, and `pnpm run verify:package`; the last command installs the tarball into a disposable DSH profile and verifies the effective bundle layer. Report exactly what ran; do not substitute upstream DSH tests for this plugin's integration evidence. Live-provider tests require explicitly authorized resources and spending.
+
+Biome is the repository formatter and linter. Run `pnpm run format` to apply safe formatting and lint fixes. Lefthook runs Biome on staged JavaScript, TypeScript and JSON before commit, then runs the complete local gate before push.
 
 ## Submit a pull request
 
