@@ -27,20 +27,37 @@ function redact(output) {
   return output.replaceAll(/token=[^\s]+/g, 'token=[redacted]')
 }
 
+function signalProcessTree(child, processGroupId, signal) {
+  try {
+    if (process.platform === 'win32') {
+      if (child.exitCode === null) child.kill(signal)
+    } else if (processGroupId !== undefined) process.kill(-processGroupId, signal)
+  } catch (error) {
+    if (error.code !== 'ESRCH') throw error
+  }
+}
+
 function bootProfile(profileName) {
   return new Promise((resolveBoot, rejectBoot) => {
     const child = spawn(npx, [...dsh, '--profile', profileName, '--host', '127.0.0.1', '--port', '0', '--no-open'], {
       cwd: root,
+      detached: process.platform !== 'win32',
       env: { ...process.env, DSH_HOME: dshHome },
       stdio: ['ignore', 'pipe', 'pipe'],
     })
+    const processGroupId = child.pid
     let ready = false
     let timedOut = false
     let stdout = ''
     let stderr = ''
+    let forceKillTimeout
+    const stopProcessTree = () => {
+      signalProcessTree(child, processGroupId, 'SIGTERM')
+      forceKillTimeout ??= setTimeout(() => signalProcessTree(child, processGroupId, 'SIGKILL'), 3_000)
+    }
     const timeout = setTimeout(() => {
       timedOut = true
-      child.kill('SIGTERM')
+      stopProcessTree()
     }, 15_000)
 
     child.stdout.on('data', (chunk) => {
@@ -48,7 +65,7 @@ function bootProfile(profileName) {
       stdout = `${stdout}${output}`.slice(-8_000)
       if (output.includes('dsh web: http://127.0.0.1:')) {
         ready = true
-        child.kill('SIGTERM')
+        stopProcessTree()
       }
     })
     child.stderr.on('data', (chunk) => {
@@ -56,10 +73,12 @@ function bootProfile(profileName) {
     })
     child.once('error', (error) => {
       clearTimeout(timeout)
+      clearTimeout(forceKillTimeout)
       rejectBoot(error)
     })
-    child.once('exit', (code) => {
+    child.once('close', (code) => {
       clearTimeout(timeout)
+      clearTimeout(forceKillTimeout)
       const output = redact(`${stdout}\n${stderr}`)
       if (timedOut) rejectBoot(new Error(`${profileName} did not reach Web readiness within 15 seconds\n${output}`))
       else if (ready) resolveBoot()
