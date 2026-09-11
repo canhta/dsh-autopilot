@@ -1,7 +1,13 @@
 import { type TrackerIngressRequest, trackerProviderId } from '../tracker.js'
 import { readEveryCandidate } from './candidates.js'
 import { MAX_INGRESS_RECEIPTS, STATE_KEY } from './constants.js'
-import type { AdmissionDecision, QueuedRun, ReconcileRequest, ReconcileResult } from './model.js'
+import {
+  type AdmissionDecision,
+  AdmissionIngressError,
+  type QueuedRun,
+  type ReconcileRequest,
+  type ReconcileResult,
+} from './model.js'
 import {
   assertStateSize,
   type EligibleIssue,
@@ -97,7 +103,8 @@ export async function reconcile(
       }
       decisions = indexedDecisions.filter((decision) => decision !== undefined)
 
-      if (request.deliveryId !== undefined) {
+      const capacityDeferred = decisions.some((decision) => decision.outcome === 'deferred')
+      if (request.deliveryId !== undefined && !capacityDeferred) {
         next.acceptedIngress.push(request.deliveryId)
         if (next.acceptedIngress.length > MAX_INGRESS_RECEIPTS) next.acceptedIngress.shift()
       }
@@ -107,7 +114,11 @@ export async function reconcile(
       return parsed
     })
 
-    return { ...snapshotOf(committed), decisions }
+    const result = { ...snapshotOf(committed), decisions }
+    if (request.deliveryId !== undefined && decisions.some((decision) => decision.outcome === 'deferred')) {
+      throw new AdmissionIngressError('queue-capacity')
+    }
+    return result
   })
 }
 
@@ -120,7 +131,7 @@ export async function reconcileIngress(
   signal?.throwIfAborted()
   const providerId = trackerProviderId(dependencies.settings().trackerProvider)
   return dependencies.tracker.withProvider(providerId, async (reader) => {
-    const delivery = await reader.verifyIngress(request)
+    const delivery = await reader.verifyIngress(request, signal)
     signal?.throwIfAborted()
     const result = await reconcile(dependencies, {
       source: 'webhook',
@@ -128,7 +139,7 @@ export async function reconcileIngress(
       ...(signal === undefined ? {} : { signal }),
     })
     if (!result.acceptedIngress.includes(delivery.deliveryId)) {
-      throw new Error('scheduler is not accepting tracker ingress')
+      throw new AdmissionIngressError('not-accepting')
     }
     return result
   })

@@ -13,7 +13,7 @@ export async function readEveryCandidate(
   let cursor: string | undefined
   do {
     signal?.throwIfAborted()
-    const page = await reader.readCandidates(cursor)
+    const page = await reader.readCandidates(cursor, signal)
     totalCandidateBytes += textEncoder.encode(JSON.stringify(page)).byteLength
     if (issues.length + page.issues.length > MAX_CANDIDATES || totalCandidateBytes > MAX_CANDIDATE_BYTES) {
       throw new TrackerProviderError('invalid-response', `tracker provider "${providerId}" exceeded admission bounds`)
@@ -21,7 +21,10 @@ export async function readEveryCandidate(
     issues.push(...page.issues)
     cursor = page.nextCursor
     if (cursor !== undefined && (!seenCursors.add(cursor) || seenCursors.size > 1000)) {
-      throw new Error(`tracker provider "${providerId}" returned a non-terminating cursor sequence`)
+      throw new TrackerProviderError(
+        'invalid-response',
+        `tracker provider "${providerId}" returned a non-terminating cursor sequence`,
+      )
     }
   } while (cursor !== undefined)
   return issues

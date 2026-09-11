@@ -36,7 +36,12 @@ export class Tracker extends Service {
     super(ctx, 'tracker')
   }
 
-  /** Register one complete provider generation until its async disposer drains active operations. */
+  /**
+   * Register one complete provider generation and synchronously publish its availability. The provider must use the
+   * current interface version, declare every required capability, and have a unique id; violations throw without
+   * changing the registry. The returned idempotent disposer stops admission to the generation, aborts and drains its
+   * active operations, removes it, then publishes unavailability. Disposer cancellation is not supported.
+   */
   register(provider: TrackerProvider): () => Promise<void> {
     if (provider.interfaceVersion !== TRACKER_INTERFACE_VERSION) {
       throw new TypeError(
@@ -69,6 +74,10 @@ export class Tracker extends Service {
     }
   }
 
+  /**
+   * Observe future provider availability changes synchronously. Registration has no replay and no cancellation point;
+   * observer failures are logged and do not block other observers. The returned idempotent function unsubscribes.
+   */
   watchProviders(observer: (event: TrackerProviderLifecycleEvent) => void): () => void {
     this.lifecycleObservers.add(observer)
     return () => {
@@ -76,18 +85,29 @@ export class Tracker extends Service {
     }
   }
 
-  async readCandidates(id: TrackerProviderId, cursor?: string): Promise<TrackerCandidatePage> {
-    return this.withProvider(id, (reader) => reader.readCandidates(cursor))
+  /**
+   * Read one validated page through the currently registered provider generation. The optional cursor must have been
+   * returned by that provider. Provider failures and withdrawal reject with `TrackerProviderError`; caller cancellation
+   * rejects with its original reason. This operation has no durable or external-write effect.
+   */
+  async readCandidates(id: TrackerProviderId, cursor?: string, signal?: AbortSignal): Promise<TrackerCandidatePage> {
+    return this.withProvider(id, (reader) => reader.readCandidates(cursor, signal))
   }
 
+  /**
+   * Retain the selected provider generation while an operation uses its reader. The provider must be available when
+   * called. Provider withdrawal aborts its reads, waits for the callback to settle, and fences late results; consumer
+   * failures are preserved. Effects performed by the callback are caller-owned and must occur only after awaited reader
+   * operations succeed. `withProvider` itself has no independent caller-cancellation input.
+   */
   async withProvider<T>(id: TrackerProviderId, operation: (reader: TrackerReader) => Promise<T>): Promise<T> {
     const registered = this.providers.get(id)
     if (registered === undefined || !registered.accepting) {
       throw new TrackerProviderError('provider-unavailable', `tracker provider "${id}" is unavailable`)
     }
     const reader: TrackerReader = {
-      readCandidates: (cursor) => this.readProviderCandidates(registered, cursor),
-      verifyIngress: (request) => this.verifyProviderIngress(registered, request),
+      readCandidates: (cursor, signal) => this.readProviderCandidates(registered, cursor, signal),
+      verifyIngress: (request, signal) => this.verifyProviderIngress(registered, request, signal),
     }
     let active: Promise<T>
     try {
@@ -103,9 +123,14 @@ export class Tracker extends Service {
     }
   }
 
-  private async readProviderCandidates(registered: RegisteredProvider, cursor?: string): Promise<TrackerCandidatePage> {
+  private async readProviderCandidates(
+    registered: RegisteredProvider,
+    cursor?: string,
+    callerSignal?: AbortSignal,
+  ): Promise<TrackerCandidatePage> {
+    callerSignal?.throwIfAborted()
     const request: TrackerReadRequest = {
-      signal: registered.controller.signal,
+      signal: this.combinedSignal(registered, callerSignal),
       ...(cursor === undefined ? {} : { cursor }),
     }
     let page: TrackerCandidatePage
@@ -118,6 +143,7 @@ export class Tracker extends Service {
           `tracker provider "${registered.provider.id}" was withdrawn`,
         )
       }
+      callerSignal?.throwIfAborted()
       if (error instanceof TrackerProviderError) throw error
       throw new TrackerProviderError(
         'transient',
@@ -130,6 +156,7 @@ export class Tracker extends Service {
         `tracker provider "${registered.provider.id}" was withdrawn`,
       )
     }
+    callerSignal?.throwIfAborted()
     const parsed = candidatePageSchema.safeParse(page)
     if (!parsed.success) {
       throw new TrackerProviderError(
@@ -146,14 +173,16 @@ export class Tracker extends Service {
   private async verifyProviderIngress(
     registered: RegisteredProvider,
     request: TrackerIngressRequest,
+    callerSignal?: AbortSignal,
   ): Promise<TrackerIngressDelivery> {
+    callerSignal?.throwIfAborted()
     let delivery: TrackerIngressDelivery
     try {
       delivery = await registered.provider.verifyIngress({
         method: request.method,
         headers: request.headers.map((header) => ({ ...header })),
         body: request.body.slice(),
-        signal: registered.controller.signal,
+        signal: this.combinedSignal(registered, callerSignal),
       })
     } catch (error) {
       if (!registered.accepting) {
@@ -162,6 +191,7 @@ export class Tracker extends Service {
           `tracker provider "${registered.provider.id}" was withdrawn`,
         )
       }
+      callerSignal?.throwIfAborted()
       if (error instanceof TrackerProviderError) throw error
       throw new TrackerProviderError(
         'transient',
@@ -174,6 +204,7 @@ export class Tracker extends Service {
         `tracker provider "${registered.provider.id}" was withdrawn`,
       )
     }
+    callerSignal?.throwIfAborted()
     const parsed = ingressDeliverySchema.safeParse(delivery)
     if (!parsed.success || !parsed.data.deliveryId.startsWith(`${registered.provider.id}:`)) {
       throw new TrackerProviderError(
@@ -182,6 +213,12 @@ export class Tracker extends Service {
       )
     }
     return parsed.data
+  }
+
+  private combinedSignal(registered: RegisteredProvider, callerSignal?: AbortSignal): AbortSignal {
+    return callerSignal === undefined
+      ? registered.controller.signal
+      : AbortSignal.any([registered.controller.signal, callerSignal])
   }
 
   private notifyProviderLifecycle(event: TrackerProviderLifecycleEvent): void {

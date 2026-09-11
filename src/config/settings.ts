@@ -58,10 +58,15 @@ export class AutopilotConfig extends Service {
     })
   }
 
+  /** Return the current validated Settings snapshot; the caller receives no credential values and performs no I/O. */
   get(): AutopilotSettings {
     return this.settings.get()
   }
 
+  /**
+   * Observe successfully persisted Settings changes until the returned disposer is called.
+   * The Settings service serializes callbacks; callback failures propagate according to its watcher contract.
+   */
   watch(callback: (next: AutopilotSettings, previous: AutopilotSettings) => void | Promise<void>): () => void {
     return this.settings.watch(callback)
   }
@@ -82,6 +87,7 @@ function validateSettings(value: AutopilotSettings): void {
   if (value.executionMode === 'fixture') validateFixtureExecutionSettings(value)
 }
 
+/** Validate the explicit fixture-execution subset; throws before any execution resource is acquired. */
 export function validateFixtureExecutionSettings(settings: AutopilotSettings): void {
   if (settings.executionMode !== 'fixture') {
     throw new Error('dispatch is disabled; this slice accepts only explicit fixture execution')

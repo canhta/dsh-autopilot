@@ -24,6 +24,19 @@ export interface ReconcileRequest {
   signal?: AbortSignal
 }
 
+/** Bounded core failure proving that tracker ingress was not durably accepted. */
+export class AdmissionIngressError extends Error {
+  /** Construct a caller-safe ingress failure; this operation has no side effects or cancellation point. */
+  constructor(readonly code: 'queue-capacity' | 'not-accepting') {
+    super(
+      code === 'queue-capacity'
+        ? 'Admission queue capacity deferred eligible tracker work.'
+        : 'Admission is not accepting tracker ingress.',
+    )
+    this.name = 'AdmissionIngressError'
+  }
+}
+
 export type AdmissionRejectionReason =
   | 'missing-brief'
   | 'ambiguous-brief'

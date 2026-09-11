@@ -64,34 +64,51 @@ export class Admission extends Service {
     return snapshotOf(current)
   }
 
+  /** Atomically change the admission/dequeue gate; rejects invalid modes or unsafe disable and has no cancellation point. */
   setSchedulerMode(mode: SchedulerMode): Promise<AdmissionSnapshot> {
     return this.pauseControl().setSchedulerMode(mode)
   }
 
+  /**
+   * Persist a draining/disabled transition and pause requests for active work.
+   * Rejects storage/schema failures; returned run ids still require the dispatcher to reach quiescence.
+   */
   requestSchedulerDisable(): Promise<SchedulerDisableResult> {
     return this.pauseControl().requestSchedulerDisable()
   }
 
+  /** Persist service-withdrawal pause requests for active runs; it does not itself cancel agents or accept cancellation. */
   requestServiceWithdrawalPause(): Promise<RunId[]> {
     return this.pauseControl().requestServiceWithdrawalPause()
   }
 
+  /** Request an operator pause for one active run; rejects missing/terminal runs and performs no agent cancellation itself. */
   requestRunPause(runId: RunId): Promise<PausingRun | PausedActiveRun> {
     return this.pauseControl().requestRunPause(runId)
   }
 
+  /**
+   * Commit a quiescent active-run pause after the dispatcher has observed Git and usage.
+   * Rejects stale/non-pausing runs, invalid facts, or durable-write failures; no caller cancellation is accepted.
+   */
   checkpointPaused(runId: RunId, git: GitExecutionSnapshot, usage: RunUsageSettlement): Promise<PausedActiveRun> {
     return this.pauseControl().checkpointPaused(runId, git, usage)
   }
 
+  /** Persist an operator hold for queued work before resources are allocated; rejects non-queued runs. */
   holdQueued(runId: RunId): Promise<PausedQueuedRun> {
     return this.pauseControl().holdQueued(runId)
   }
 
+  /** Revalidate and return operator-held queued work to dispatch order; rejects changed eligibility or disabled admission. */
   resumeRun(runId: RunId): Promise<QueuedRun> {
     return this.resumeControl().resumeRun(runId)
   }
 
+  /**
+   * Revalidate retained issue, Session/worktree Git facts, scheduler and budget before active continuation.
+   * Rejects unauthorized/stale recovery and durable failures; it allocates no external resource and has no cancellation.
+   */
   resumeActiveRun(
     runId: RunId,
     observedGit: GitExecutionSnapshot,
@@ -100,18 +117,22 @@ export class Admission extends Service {
     return this.resumeControl().resumeActiveRun(runId, observedGit, authorization)
   }
 
+  /** Persist a bounded explicit-recovery requirement for an allocated paused run; rejects incompatible lifecycle state. */
   requireActiveRecovery(runId: RunId, reason: ActiveRecoveryReason): Promise<PausedActiveRun> {
     return this.resumeControl().requireActiveRecovery(runId, reason)
   }
 
+  /** Atomically claim and reserve the next eligible queued run, or return undefined; rejects invalid settings/state. */
   claimNext(): Promise<ImplementingRun | undefined> {
     return this.executionControl().claimNext()
   }
 
+  /** Persist verified worktree ownership facts for the claimed run; rejects stale identity, invalid Git facts or writes. */
   recordWorktree(runId: RunId, git: GitExecutionSnapshot): Promise<ImplementingRun | PausingRun> {
     return this.executionControl().recordWorktree(runId, git)
   }
 
+  /** Atomically settle one implementing run and its usage reservation; rejects mismatched outcomes or stale state. */
   settle(runId: RunId, outcome: ExecutionOutcome, usage: RunUsageSettlement): Promise<TerminalRun> {
     return this.executionControl().settle(runId, outcome, usage)
   }

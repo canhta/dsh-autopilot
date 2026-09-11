@@ -133,6 +133,30 @@ describe('Jira Cloud tracker adapter', () => {
     expect(fetchImplementation).not.toHaveBeenCalled()
   })
 
+  it('rejects an empty webhook body before resolving credentials or reading tracker state', async () => {
+    const fetchImplementation = vi.fn(async () => {
+      throw new Error('webhook verification must not call Jira')
+    })
+    const { ctx, credentials } = await boot(fetchImplementation)
+    const resolve = vi.spyOn(credentials, 'resolve')
+
+    const verification = ctx.tracker.withProvider(trackerProviderId('jira'), (provider) =>
+      provider.verifyIngress({
+        method: 'POST',
+        headers: [
+          { name: 'content-type', value: 'application/json' },
+          { name: 'x-hub-signature', value: `sha256=${'0'.repeat(64)}` },
+          { name: 'x-atlassian-webhook-identifier', value: 'delivery-123' },
+        ],
+        body: new Uint8Array(),
+      }),
+    )
+
+    await expect(verification).rejects.toMatchObject({ code: 'invalid-response' })
+    expect(resolve).not.toHaveBeenCalled()
+    expect(fetchImplementation).not.toHaveBeenCalled()
+  })
+
   it('normalizes paginated issue context through the tracker service', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = []
     const fetchImplementation: typeof fetch = async (input, init) => {

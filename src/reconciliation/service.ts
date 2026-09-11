@@ -1,5 +1,5 @@
 import { type Context, Service } from '@deepseek-ai/cordis'
-import type { AdmissionSource, ReconcileResult } from '../admission.js'
+import { AdmissionIngressError, type AdmissionSource, type ReconcileResult } from '../admission.js'
 import {
   type TrackerIngressRequest,
   TrackerProviderError,
@@ -8,9 +8,27 @@ import {
 } from '../tracker.js'
 
 type TimedReconciliationSource = Exclude<AdmissionSource, 'manual' | 'webhook'>
+export type ReconciliationErrorCode = 'overloaded' | 'unavailable'
+
+// Admission serializes durable commits. This permits a useful webhook burst while
+// bounding retained 256 KiB ingress bodies to roughly 8 MiB per process.
+const MAX_CONCURRENT_INGRESS_ATTEMPTS = 32
+
+const reconciliationErrorMessages: Record<ReconciliationErrorCode, string> = {
+  overloaded: 'Autopilot ingress is temporarily at capacity.',
+  unavailable: 'Autopilot is not accepting tracker ingress.',
+}
+
+/** A caller-safe failure raised by the reconciliation owner itself. */
+export class ReconciliationError extends Error {
+  constructor(readonly code: ReconciliationErrorCode) {
+    super(reconciliationErrorMessages[code])
+    this.name = 'ReconciliationError'
+  }
+}
 
 export interface ReconciliationFailure {
-  readonly code: TrackerProviderErrorCode | 'internal'
+  readonly code: TrackerProviderErrorCode | ReconciliationErrorCode | 'internal'
   readonly message: string
   readonly retryAfterMs?: number
 }
@@ -34,7 +52,7 @@ export interface ReconciliationSnapshot {
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
-    reconciliation: Reconciliation
+    autopilotReconciliation: Reconciliation
   }
 }
 
@@ -44,6 +62,7 @@ export class Reconciliation extends Service {
 
   private timer: ReturnType<typeof setTimeout> | undefined
   private lifecycleAttempt: Promise<void> | undefined
+  private startupPending = false
   private readonly ingressAttempts = new Set<Promise<ReconcileResult>>()
   private readonly controller = new AbortController()
   private stopping = false
@@ -52,7 +71,7 @@ export class Reconciliation extends Service {
   private lastAttempt: ReconciliationAttemptSnapshot | undefined
 
   constructor(ctx: Context) {
-    super(ctx, 'reconciliation')
+    super(ctx, 'autopilotReconciliation')
   }
 
   async *[Service.init](): AsyncGenerator<() => Promise<void>, void, void> {
@@ -65,7 +84,8 @@ export class Reconciliation extends Service {
         event.kind === 'available' &&
         event.providerId === trackerProviderId(this.ctx.autopilotConfig.get().trackerProvider)
       ) {
-        void this.runTimed('startup')
+        if (this.lifecycleAttempt === undefined) void this.runTimed('startup')
+        else this.startupPending = true
       }
     })
     yield async () => {
@@ -84,6 +104,12 @@ export class Reconciliation extends Service {
     })
   }
 
+  /**
+   * Return a detached, bounded view of reconciliation activity and its most recent sanitized outcome.
+   *
+   * Preconditions: none; a retained module reference remains inspectable during shutdown. This operation has no side
+   * effects, performs no I/O, does not fail under normal operation, and is not cancellable.
+   */
   snapshot(): ReconciliationSnapshot {
     return {
       active: this.active,
@@ -92,12 +118,29 @@ export class Reconciliation extends Service {
     }
   }
 
-  /** Authenticate and reconcile one delivery, exposing only bounded aggregate counts and sanitized failures. */
-  acceptIngress(request: TrackerIngressRequest): Promise<ReconcileResult> {
+  /**
+   * Authenticate and durably reconcile one provider delivery.
+   *
+   * The request must preserve the HTTP method, raw header multiplicity, and exact body bytes expected by the selected
+   * tracker provider. A successful promise means the delivery identity and resulting admission decisions were committed
+   * before acknowledgement is safe. The operation updates aggregate diagnostics but never records request or ticket
+   * content. It rejects with `ReconciliationError('overloaded')` before launching work when 32 ingress attempts are
+   * already active or admission capacity cannot consume the delivery, and with `ReconciliationError('unavailable')` when
+   * admission is not accepting deliveries. Provider and durable-write failures are propagated while the diagnostics view
+   * exposes only their sanitized classification. `signal` is combined with owner disposal; cancellation is cooperative
+   * and fences persistent mutation before commit, but callers must still await the rejected promise before releasing owned
+   * resources.
+   */
+  acceptIngress(request: TrackerIngressRequest, signal?: AbortSignal): Promise<ReconcileResult> {
     if (this.stopping) {
-      return Promise.reject(new TrackerProviderError('provider-unavailable', 'reconciliation owner is unavailable'))
+      return Promise.reject(new ReconciliationError('unavailable'))
     }
-    const attempt = this.runIngress(request)
+    if (this.ingressAttempts.size >= MAX_CONCURRENT_INGRESS_ATTEMPTS) {
+      const error = new ReconciliationError('overloaded')
+      this.lastAttempt = failedAttempt('webhook', new Date().toISOString(), error)
+      return Promise.reject(error)
+    }
+    const attempt = this.runIngress(request, signal)
     this.ingressAttempts.add(attempt)
     return attempt.then(
       (result) => {
@@ -111,17 +154,20 @@ export class Reconciliation extends Service {
     )
   }
 
-  private async runIngress(request: TrackerIngressRequest): Promise<ReconcileResult> {
+  private async runIngress(request: TrackerIngressRequest, callerSignal?: AbortSignal): Promise<ReconcileResult> {
     const source = 'webhook' as const
     const startedAt = new Date().toISOString()
+    const signal =
+      callerSignal === undefined ? this.controller.signal : AbortSignal.any([this.controller.signal, callerSignal])
     this.active += 1
     try {
-      const result = await this.ctx.admission.reconcileIngress(request, this.controller.signal)
+      const result = await this.ctx.admission.reconcileIngress(request, signal)
       this.lastAttempt = successfulAttempt(source, startedAt, result)
       return result
     } catch (error) {
-      this.lastAttempt = failedAttempt(source, startedAt, error)
-      throw error
+      const failure = translateIngressFailure(error)
+      this.lastAttempt = failedAttempt(source, startedAt, failure)
+      throw failure
     } finally {
       this.active -= 1
     }
@@ -147,7 +193,13 @@ export class Reconciliation extends Service {
       .finally(() => {
         this.active -= 1
         if (this.lifecycleAttempt === attempt) this.lifecycleAttempt = undefined
-        this.scheduleNext()
+        if (this.stopping) return
+        if (this.startupPending) {
+          this.startupPending = false
+          void this.runTimed('startup')
+        } else {
+          this.scheduleNext()
+        }
       })
     this.lifecycleAttempt = attempt
     return attempt
@@ -169,6 +221,11 @@ export class Reconciliation extends Service {
     this.timer = undefined
     this.nextScheduledAt = undefined
   }
+}
+
+function translateIngressFailure(error: unknown): unknown {
+  if (!(error instanceof AdmissionIngressError)) return error
+  return new ReconciliationError(error.code === 'queue-capacity' ? 'overloaded' : 'unavailable')
 }
 
 function successfulAttempt(
@@ -201,6 +258,9 @@ function failedAttempt(source: AdmissionSource, startedAt: string, error: unknow
 }
 
 function sanitizedFailure(error: unknown): ReconciliationFailure {
+  if (error instanceof ReconciliationError) {
+    return { code: error.code, message: error.message }
+  }
   if (error instanceof TrackerProviderError) {
     return {
       code: error.code,

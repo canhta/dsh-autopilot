@@ -172,4 +172,56 @@ describe('tracker service seam', () => {
       }),
     ).rejects.toBe(consumerFailure)
   })
+
+  it('passes caller cancellation to candidate reads without relabeling it as a provider failure', async () => {
+    const ctx = new Context()
+    await ctx.plugin(Tracker)
+    const readStarted = new Deferred<void>()
+    const callerCancelled = new Error('caller cancelled reconciliation')
+    ctx.tracker.register(
+      fixtureProvider({
+        readCandidates: async ({ signal }) => {
+          readStarted.resolve()
+          await new Promise<void>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+          })
+          return { issues: [] }
+        },
+      }),
+    )
+    const controller = new AbortController()
+
+    const read = ctx.tracker.readCandidates(trackerProviderId('fixture'), undefined, controller.signal)
+    await readStarted.promise
+    controller.abort(callerCancelled)
+
+    await expect(read).rejects.toBe(callerCancelled)
+  })
+
+  it('passes caller cancellation to ingress verification without relabeling it as a provider failure', async () => {
+    const ctx = new Context()
+    await ctx.plugin(Tracker)
+    const verificationStarted = new Deferred<void>()
+    const callerCancelled = new Error('caller cancelled ingress')
+    ctx.tracker.register(
+      fixtureProvider({
+        verifyIngress: async ({ signal }) => {
+          verificationStarted.resolve()
+          await new Promise<void>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+          })
+          return { deliveryId: 'fixture:unreachable' }
+        },
+      }),
+    )
+    const controller = new AbortController()
+
+    const verification = ctx.tracker.withProvider(trackerProviderId('fixture'), (reader) =>
+      reader.verifyIngress({ method: 'POST', headers: [], body: new Uint8Array() }, controller.signal),
+    )
+    await verificationStarted.promise
+    controller.abort(callerCancelled)
+
+    await expect(verification).rejects.toBe(callerCancelled)
+  })
 })

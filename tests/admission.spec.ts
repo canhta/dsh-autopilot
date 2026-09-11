@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
-import { Admission, type RunId } from '../src/admission.js'
+import { Admission, AdmissionIngressError, type RunId } from '../src/admission.js'
 import { AutopilotConfig } from '../src/config.js'
 import { createFixtureTrackerProvider } from '../src/testing.js'
 import {
@@ -14,11 +14,12 @@ import {
   type TrackerComment,
   type TrackerIssueSnapshot,
   type TrackerProvider,
+  TrackerProviderError,
   trackerBindingId,
   trackerCommentId,
   trackerIssueId,
 } from '../src/tracker.js'
-import { disposeContext, fixtureExecutionSettings, mountHostServices } from './dsh-fixtures.js'
+import { Deferred, disposeContext, fixtureExecutionSettings, mountHostServices } from './dsh-fixtures.js'
 
 const temporaryDirectories: string[] = []
 const contexts: Context[] = []
@@ -873,6 +874,65 @@ describe('admission service seam', () => {
     expect(snapshot.acceptedIngress).toContain('fixture:delivery-1')
   })
 
+  it('cancels the active provider read when reconciliation is cancelled without mutating admission', async () => {
+    const { ctx, disposeProvider } = await boot(await databasePath(), [])
+    await disposeProvider()
+    const readStarted = new Deferred<void>()
+    const callerCancelled = new Error('reconciliation owner disposed')
+    ctx.tracker.register(
+      createFixtureTrackerProvider({
+        issues: [candidate()],
+        readCandidates: async ({ signal }) => {
+          readStarted.resolve()
+          await new Promise<void>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+          })
+          return { issues: [candidate()] }
+        },
+      }),
+    )
+    const controller = new AbortController()
+    const before = ctx.admission.snapshot()
+
+    const reconciliation = ctx.admission.reconcile({ source: 'scheduled', signal: controller.signal })
+    await readStarted.promise
+    controller.abort(callerCancelled)
+
+    await expect(reconciliation).rejects.toBe(callerCancelled)
+    expect(ctx.admission.snapshot()).toEqual(before)
+  })
+
+  it('cancels provider ingress verification when its admission caller is cancelled', async () => {
+    const { ctx, disposeProvider } = await boot(await databasePath(), [])
+    await disposeProvider()
+    const verificationStarted = new Deferred<void>()
+    const callerCancelled = new Error('ingress owner disposed')
+    ctx.tracker.register(
+      createFixtureTrackerProvider({
+        issues: [candidate()],
+        verifyIngress: async ({ signal }) => {
+          verificationStarted.resolve()
+          await new Promise<void>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+          })
+          return { deliveryId: 'fixture:unreachable' }
+        },
+      }),
+    )
+    const controller = new AbortController()
+    const before = ctx.admission.snapshot()
+
+    const reconciliation = ctx.admission.reconcileIngress(
+      { method: 'POST', headers: [], body: new Uint8Array() },
+      controller.signal,
+    )
+    await verificationStarted.promise
+    controller.abort(callerCancelled)
+
+    await expect(reconciliation).rejects.toBe(callerCancelled)
+    expect(ctx.admission.snapshot()).toEqual(before)
+  })
+
   it('does not reconsider an already accepted webhook delivery', async () => {
     const path = await databasePath()
     const first = await boot(path, [candidate()])
@@ -961,6 +1021,55 @@ describe('admission service seam', () => {
       { displayKey: 'FIX-LOW', outcome: 'deferred', reason: 'queue-capacity' },
       { displayKey: 'FIX-HIGH', outcome: 'queued' },
     ])
+  })
+
+  it('does not consume a webhook receipt while eligible work is deferred by queue capacity', async () => {
+    const first = candidate({ issueId: trackerIssueId('first'), displayKey: 'FIX-1', priorityRank: 1 })
+    const second = candidate({ issueId: trackerIssueId('second'), displayKey: 'FIX-2', priorityRank: 2 })
+    const { ctx } = await boot(await databasePath(), [first, second], 1)
+
+    const failure = await ctx.admission
+      .reconcile({ source: 'webhook', deliveryId: 'fixture:capacity-delivery' })
+      .catch((error: unknown) => error)
+
+    expect(failure).toBeInstanceOf(AdmissionIngressError)
+    expect(failure).toMatchObject({ code: 'queue-capacity' })
+    expect(ctx.admission.snapshot().acceptedIngress).not.toContain('fixture:capacity-delivery')
+    expect(ctx.admission.snapshot().runs.map((run) => run.displayKey)).toEqual(['FIX-1'])
+  })
+
+  it('classifies non-terminating and overbound provider pagination as invalid responses', async () => {
+    const path = await databasePath()
+    const ctx = trackContext(
+      await mountHostServices(path, {
+        'dsh-autopilot': { trackerProvider: 'fixture', maxQueued: 20 },
+      }),
+    )
+    await ctx.plugin(Tracker)
+    const repeatedCursor = ctx.tracker.register(
+      createFixtureTrackerProvider({
+        issues: [],
+        readCandidates: () => Promise.resolve({ issues: [], nextCursor: 'same-page' }),
+      }),
+    )
+    await ctx.plugin(AutopilotConfig)
+    await ctx.plugin(Admission)
+
+    const repeated = await ctx.admission.reconcile({ source: 'scheduled' }).catch((error: unknown) => error)
+    expect(repeated).toBeInstanceOf(TrackerProviderError)
+    expect(repeated).toMatchObject({ code: 'invalid-response' })
+
+    await repeatedCursor()
+    ctx.tracker.register(
+      createFixtureTrackerProvider({
+        issues: [],
+        readCandidates: () => Promise.resolve({ issues: Array.from({ length: 1_001 }, () => candidate()) }),
+      }),
+    )
+
+    const overbound = await ctx.admission.reconcile({ source: 'scheduled' }).catch((error: unknown) => error)
+    expect(overbound).toBeInstanceOf(TrackerProviderError)
+    expect(overbound).toMatchObject({ code: 'invalid-response' })
   })
 
   it('requires current readiness and a transition no older than the selected Brief', async () => {
