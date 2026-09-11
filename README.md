@@ -27,29 +27,26 @@ You decide which tickets are ready, when the agent can work and how much it can 
 ## How it works
 
 ```mermaid
-flowchart TD
+flowchart LR
     accTitle: From approved ticket to review-ready pull request
-    accDescr: Autopilot queues approved Jira or Linear tickets and dispatches DSH work when eligibility, schedule, capacity and budget allow. Blockers require a human reply and readiness change on the ticket. Paused work retains its Session and worktree. Verified work becomes a GitHub or Bitbucket pull request, followed by configured notifications.
+    accDescr: Approved tickets enter the Autopilot queue. DSH executes eligible work under schedule, capacity and budget limits. Verified local work becomes a review-ready pull request. Notifications are delivered independently after PR creation.
 
-    ticket["Jira / Linear<br/>Ready label + approved Agent Brief"]
-    queue["Autopilot queue"]
-    agent["DSH agent in a Git worktree<br/>Follow repo rules, implement, check locally"]
-    blocker["Blocked<br/>Questions in ticket comments"]
-    pause["Paused<br/>Keep Session + worktree"]
-    pr["GitHub / Bitbucket<br/>Review-ready PR · run complete"]
-    notify["Configured notifications<br/>Ticket comment / webhook / ntfy"]
+    ticket["Ready ticket<br/>Jira / Linear"]
+    queue["Autopilot queue<br/>Schedule + limits"]
+    agent["DSH agent<br/>Code + local checks"]
+    pr["Review-ready PR<br/>GitHub / Bitbucket"]
+    notify["Notify<br/>Configured channels"]
 
-    ticket -->|Admission allowed| queue
-    queue -->|Eligible and scheduled<br/>Capacity and budget available| agent
-    agent -->|Verified local outcome| pr
-    agent -->|Needs human input| blocker
-    blocker -->|Human replies<br/>and marks ready| queue
-    agent -->|Schedule, budget<br/>or operator pause| pause
-    pause -->|Pause conditions cleared| queue
-    pr -.->|Independent delivery| notify
+    ticket --> queue --> agent --> pr
+    pr -.-> notify
 ```
 
-Resuming work rechecks the gates and retained workspace; it does not discard the existing run. An operator pause requires explicit resume, and a reply alone cannot clear a tracker blocker. See [run lifecycle](docs/specs/lifecycle.md) for exact pause, recovery and publication rules. Humans review and merge the PR; Autopilot does not merge it or mark the ticket Done.
+Autopilot selects tickets with the configured ready label and approved Agent Brief, then dispatches eligible work when the schedule, capacity and budget allow. DSH follows the repository's rules in a Git worktree. Creating the verified PR completes the run; notification delivery is independent. Humans own review, merge and marking the ticket Done.
+
+- **Blocked:** questions go into ticket comments. A human must reply and mark the ticket ready before work can continue.
+- **Paused:** keep the Session and worktree. Resume rechecks eligibility and execution limits; an operator pause requires explicit resume.
+
+See [run lifecycle](docs/specs/lifecycle.md) for exact pause, recovery and publication rules.
 
 This is an issue-driven AI Development Lifecycle (AIDLC) flow for **one project on one VPS**. Autopilot adds coordination to DSH; it does not replace the harness's agent runtime, tools or Web application. See [product responsibilities](docs/specs/scope.md) for the precise division of ownership.
 
