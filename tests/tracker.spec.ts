@@ -56,6 +56,30 @@ describe('tracker service seam', () => {
     })
   })
 
+  it('verifies ingress through the selected provider generation', async () => {
+    const ctx = new Context()
+    await ctx.plugin(Tracker)
+    ctx.tracker.register(
+      fixtureProvider({
+        verifyIngress: async ({ body, signal }) => {
+          signal.throwIfAborted()
+          expect(new TextDecoder().decode(body)).toBe('{"event":"changed"}')
+          return { deliveryId: 'fixture:delivery-1' }
+        },
+      }),
+    )
+
+    await expect(
+      ctx.tracker.withProvider(trackerProviderId('fixture'), (provider) =>
+        provider.verifyIngress({
+          method: 'POST',
+          headers: [{ name: 'x-fixture-signature', value: 'valid' }],
+          body: new TextEncoder().encode('{"event":"changed"}'),
+        }),
+      ),
+    ).resolves.toEqual({ deliveryId: 'fixture:delivery-1' })
+  })
+
   it('rejects duplicate ids and incompatible interface versions', async () => {
     const ctx = new Context()
     await ctx.plugin(Tracker)
@@ -65,7 +89,7 @@ describe('tracker service seam', () => {
     expect(() =>
       ctx.tracker.register({
         ...fixtureProvider(),
-        interfaceVersion: 2 as never,
+        interfaceVersion: 3 as never,
       }),
     ).toThrow(/interface version/)
 

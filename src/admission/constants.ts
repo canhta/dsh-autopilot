@@ -1,0 +1,10 @@
+export const MAX_INGRESS_RECEIPTS = 2048
+export const MAX_STATE_BYTES = 4 * 1024 * 1024
+export const MAX_SUMMARY_BYTES = 2048
+export const MAX_BRIEF_BYTES = 32 * 1024
+export const MAX_CANDIDATES = 1000
+export const MAX_CANDIDATE_BYTES = 16 * 1024 * 1024
+export const MAX_OUTCOME_TEXT_BYTES = 4 * 1024
+export const STATE_KEY = 'primary' as const
+export const ID_PATTERN = /^[a-z0-9][a-z0-9._:-]*$/
+export const textEncoder = new TextEncoder()

@@ -2,6 +2,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { type GenerateOptions, LlmAdapter, type StreamChunk } from '@deepseek-ai/dsh-llm'
 import { describe, it } from 'vitest'
 import { Admission } from '../../src/admission.js'
+import { AutopilotConfig } from '../../src/config.js'
 import { Dispatch, FIXTURE_PROVIDER } from '../../src/dispatch.js'
 import { createFixtureTrackerProvider } from '../../src/testing.js'
 import {
@@ -87,6 +88,7 @@ describe.skipIf(root === undefined)('isolated crash fixture', () => {
     ctx.llm.registerAdapter([FIXTURE_PROVIDER], new CrashAfterDurabilityAdapter(ctx))
     await ctx.plugin(Tracker)
     ctx.tracker.register(createFixtureTrackerProvider({ issues: [candidate()] }))
+    await ctx.plugin(AutopilotConfig)
     await ctx.plugin(Admission)
     await ctx.plugin(Dispatch)
     await ctx.admission.reconcile({ source: 'manual' })

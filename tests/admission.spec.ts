@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Admission, type RunId } from '../src/admission.js'
+import { AutopilotConfig } from '../src/config.js'
 import { createFixtureTrackerProvider } from '../src/testing.js'
 import {
   readinessGeneration,
@@ -178,6 +179,7 @@ async function boot(
   )
   await ctx.plugin(Tracker)
   const disposeProvider = ctx.tracker.register(fixtureProvider(issues, onRead))
+  await ctx.plugin(AutopilotConfig)
   await ctx.plugin(Admission)
   return { ctx, disposeProvider }
 }
@@ -1113,6 +1115,7 @@ describe('admission service seam', () => {
       }),
     )
     await ctx.plugin(Tracker)
+    await ctx.plugin(AutopilotConfig)
 
     await expect(ctx.plugin(Admission)).rejects.toThrow(/stored record.*does not match its schema/i)
     await disposeTrackedContext(ctx)
@@ -1133,6 +1136,7 @@ describe('admission service seam', () => {
       }),
     )
     await ctx.plugin(Tracker)
+    await ctx.plugin(AutopilotConfig)
 
     await expect(ctx.plugin(Admission)).rejects.toThrow(/stored record.*does not match its schema/i)
     await disposeTrackedContext(ctx)
@@ -1178,6 +1182,7 @@ describe('admission service seam', () => {
       }),
     )
     await ctx.plugin(Tracker)
+    await ctx.plugin(AutopilotConfig)
 
     await expect(ctx.plugin(Admission)).rejects.toThrow(/stored record.*does not match its schema/i)
     await disposeTrackedContext(ctx)
@@ -1247,6 +1252,7 @@ describe('admission service seam', () => {
       }),
     )
     await ctx.plugin(Tracker)
+    await ctx.plugin(AutopilotConfig)
 
     await expect(ctx.plugin(Admission)).rejects.toThrow(/stored record.*does not match its schema/i)
     await disposeTrackedContext(ctx)

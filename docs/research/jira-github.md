@@ -17,6 +17,10 @@ Use an SSH tunnel and the loopback DSH page for v1 administration. At this HEAD,
 
 ## Least privilege
 
+### Authenticated Jira webhook facts
+
+Jira Cloud secure admin webhooks accept a secret and sign each request body with HMAC-SHA256 in `X-Hub-Signature`. Jira also sends `X-Atlassian-Webhook-Identifier`, which is unique within a tenant and remains the same across retries. Autopilot can therefore verify the exact request bytes before parsing them and hash the Cloud ID together with that identifier into a bounded, tenant-qualified durable delivery identity. The secret remains a DSH Credential reference and must never enter Settings or diagnostics. [Jira Software webhooks](https://developer.atlassian.com/cloud/jira/software/webhooks/), [Jira platform webhooks](https://developer.atlassian.com/cloud/jira/platform/webhooks/).
+
 ### Jira Cloud
 
 For Autopilot's required project/issue search, issue and comment reads, changelog attribution, label edits, report comments, and configured status transitions, use the classic scopes `read:jira-work` and `write:jira-work`. Atlassian recommends classic scopes when available; these two cover issue/project reads and issue/comment writes. Add `offline_access` only for 3LO so the Host receives rotating refresh tokens. Do not request `read:jira-user`, `manage:jira-project`, `manage:jira-configuration`, or `manage:jira-webhook`; add `manage:jira-webhook` only if a later provider itself creates dynamic Jira webhooks. [Jira scope definitions](https://developer.atlassian.com/cloud/jira/platform/scopes-for-oauth-2-3LO-and-forge-apps/#classic-scopes), [3LO refresh tokens](https://developer.atlassian.com/cloud/jira/platform/oauth-2-3lo-apps/#how-do-i-get-a-new-access-token-if-my-access-token-expires-or-is-revoked), [issue search scope](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-search/#api-rest-api-3-search-jql-get), [comment-write scope](https://developer.atlassian.com/cloud/jira/platform/rest/v3/api-group-issue-comments/#api-rest-api-3-issue-issueidorkey-comment-post).

@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto'
 import { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { registerJiraProvider } from '../src/jira.js'
@@ -5,6 +6,7 @@ import { Tracker, trackerProviderId } from '../src/tracker.js'
 import { MemoryCredentials, MemorySettings } from './dsh-fixtures.js'
 
 const tokenReference = 'DSH_AUTOPILOT_JIRA_TOKEN'
+const webhookSecretReference = 'DSH_AUTOPILOT_JIRA_WEBHOOK_SECRET'
 
 const jiraSettings = {
   siteUrl: 'https://example.atlassian.net',
@@ -13,8 +15,10 @@ const jiraSettings = {
   email: 'bot@example.com',
   integrationAccountId: 'integration-account',
   credentialRef: tokenReference,
+  webhookSecretRef: webhookSecretReference,
   readyLabel: 'ready-for-agent',
   pageSize: 2,
+  requestTimeoutMs: 10_000,
   priorityRanks: { high: 1, low: 3 },
   doneStatusIds: ['done'],
   blockingLinkTypeIds: ['10000'],
@@ -41,7 +45,10 @@ function jsonAtSize(body: unknown, byteLength: number): Response {
 async function boot(fetchImplementation: typeof fetch, settings = jiraSettings) {
   const ctx = new Context()
   await ctx.plugin(MemorySettings, { document: { 'dsh-autopilot-jira': settings } })
-  await ctx.plugin(MemoryCredentials, { [tokenReference]: 'secret-one' })
+  await ctx.plugin(MemoryCredentials, {
+    [tokenReference]: 'secret-one',
+    [webhookSecretReference]: 'webhook-secret',
+  })
   await ctx.plugin(Tracker)
   const dispose = registerJiraProvider(ctx, fetchImplementation)
   return { ctx, dispose, credentials: ctx.credentials as MemoryCredentials }
@@ -52,6 +59,80 @@ afterEach(() => {
 })
 
 describe('Jira Cloud tracker adapter', () => {
+  it('authenticates webhook bytes and qualifies the tenant-scoped retry identity', async () => {
+    const { ctx } = await boot(() => Promise.reject(new Error('webhook verification must not call Jira')))
+    const body = new TextEncoder().encode('{"timestamp":1720000000000,"webhookEvent":"jira:issue_updated"}')
+
+    await expect(
+      ctx.tracker.withProvider(trackerProviderId('jira'), (provider) =>
+        provider.verifyIngress({
+          method: 'POST',
+          headers: [
+            { name: 'content-type', value: 'application/json' },
+            {
+              name: 'x-hub-signature',
+              value: 'sha256=6329ad331f424e285541a9dbaf59bde3c651a94803fe887f72e3addc66c14acc',
+            },
+            { name: 'x-atlassian-webhook-identifier', value: 'delivery-123' },
+          ],
+          body,
+        }),
+      ),
+    ).resolves.toEqual({
+      deliveryId: 'jira:f2f8b80b6d77f90073555e4df8a7f77085c953515ff89e34f198526f1f76c519',
+    })
+  })
+
+  it.each([
+    ['missing', undefined],
+    ['invalid', `sha256=${'0'.repeat(64)}`],
+  ])('rejects a %s webhook signature before tracker reads', async (_case, signature) => {
+    const fetchImplementation = vi.fn(async () => {
+      throw new Error('webhook verification must not call Jira')
+    })
+    const { ctx } = await boot(fetchImplementation)
+    const body = new TextEncoder().encode('{"timestamp":1720000000000,"webhookEvent":"jira:issue_updated"}')
+
+    const verification = ctx.tracker.withProvider(trackerProviderId('jira'), (provider) =>
+      provider.verifyIngress({
+        method: 'POST',
+        headers: [
+          { name: 'content-type', value: 'application/json' },
+          ...(signature === undefined ? [] : [{ name: 'x-hub-signature', value: signature }]),
+          { name: 'x-atlassian-webhook-identifier', value: 'delivery-123' },
+        ],
+        body,
+      }),
+    )
+
+    await expect(verification).rejects.toMatchObject({ code: 'authentication' })
+    expect(fetchImplementation).not.toHaveBeenCalled()
+  })
+
+  it('rejects malformed webhook JSON after authentication without tracker reads', async () => {
+    const fetchImplementation = vi.fn(async () => {
+      throw new Error('webhook verification must not call Jira')
+    })
+    const { ctx } = await boot(fetchImplementation)
+    const body = new TextEncoder().encode('{"timestamp":')
+    const signature = createHmac('sha256', 'webhook-secret').update(body).digest('hex')
+
+    const verification = ctx.tracker.withProvider(trackerProviderId('jira'), (provider) =>
+      provider.verifyIngress({
+        method: 'POST',
+        headers: [
+          { name: 'content-type', value: 'application/json' },
+          { name: 'x-hub-signature', value: `sha256=${signature}` },
+          { name: 'x-atlassian-webhook-identifier', value: 'delivery-123' },
+        ],
+        body,
+      }),
+    )
+
+    await expect(verification).rejects.toMatchObject({ code: 'invalid-response' })
+    expect(fetchImplementation).not.toHaveBeenCalled()
+  })
+
   it('normalizes paginated issue context through the tracker service', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = []
     const fetchImplementation: typeof fetch = async (input, init) => {
@@ -242,6 +323,16 @@ describe('Jira Cloud tracker adapter', () => {
 
     expect(error).toMatchObject({ code: 'rate-limit', retryAfterMs: 3000 })
     expect(String(error)).not.toContain('secret-one')
+  })
+
+  it('bounds provider requests with an actionable timeout', async () => {
+    const fetchImplementation: typeof fetch = (_input, init) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+      })
+    const { ctx } = await boot(fetchImplementation, { ...jiraSettings, requestTimeoutMs: 100 })
+
+    await expect(ctx.tracker.readCandidates(trackerProviderId('jira'))).rejects.toMatchObject({ code: 'timeout' })
   })
 
   it('rejects incomplete configuration before resolving credentials or calling Jira', async () => {

@@ -1,6 +1,9 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { Admission } from './admission.js'
+import { AutopilotConfig } from './config.js'
 import { Dispatch } from './dispatch.js'
+import { Ingress } from './ingress.js'
+import { Reconciliation } from './reconciliation.js'
 import { Tracker } from './tracker.js'
 
 export const name = 'dsh-autopilot'
@@ -8,10 +11,16 @@ export const inject = ['settings', 'storageDomain']
 
 export async function apply(ctx: Context): Promise<void> {
   await ctx.plugin(Tracker)
+  await ctx.plugin(AutopilotConfig)
   await ctx.plugin(Admission)
+  await ctx.plugin(Reconciliation)
+  await ctx.plugin(Ingress)
   await ctx.plugin(Dispatch)
 }
 
 export * from './admission.js'
+export * from './config.js'
 export * from './dispatch.js'
+export * from './ingress.js'
+export * from './reconciliation.js'
 export * from './tracker.js'

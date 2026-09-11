@@ -16,7 +16,7 @@ Publish the Service Definitions and registration types for external plugins. Kee
 
 | Service Definition | Provider operations | Consumers |
 | --- | --- | --- |
-| Tracker | Validate binding/scope; enumerate candidates with cursors; read issue, Brief comments and dependencies; resolve readiness evidence; write/reconcile marked reports; apply configured agent labels/review status | Admission, blocker/completion reporting, Settings lookups |
+| Tracker | Validate binding/scope; authenticate raw ingress and return a provider-qualified delivery identity; enumerate candidates with cursors; read issue, Brief comments and dependencies; resolve readiness evidence; write/reconcile marked reports; apply configured agent labels/review status | Admission, blocker/completion reporting, Settings lookups |
 | Code host | Validate repository/access; resolve Git remote/base; find/create/reconcile PR; read normalized disposition | Publication controller, maintenance, Settings lookups |
 | Notification | Validate destination; deliver a versioned event; classify result/retry and reconcile where supported | Durable delivery worker, Settings test action |
 
@@ -54,6 +54,6 @@ On provider unload, fence dependent dispatch/publication and await owned request
 
 ## Extension and acceptance
 
-Ship shared conformance fixtures/helpers with the public interface: paginated reads, unknown access, actor attribution, label preservation, mapped priorities/statuses, ambiguous writes, replay, rate limits, redaction, disposal and restart recovery. Code-host fixtures include PR identity matching and open/merged/closed-unmerged/unknown cleanup dispositions.
+Ship shared conformance fixtures/helpers with the public interface: authenticated ingress, duplicate deliveries, paginated reads, unknown access, actor attribution, label preservation, mapped priorities/statuses, ambiguous writes, replay, rate limits, timeouts, redaction, disposal and restart recovery. Code-host fixtures include PR identity matching and open/merged/closed-unmerged/unknown cleanup dispositions.
 
 Prove all four tracker/code-host combinations through the same fixture end-to-end suite. Obtain live evidence for each shipped provider on authorized test resources. A third-party fixture provider must load, register Settings and pass conformance without modifying core imports, switch statements or UI routing. Record supported DSH/interface/provider versions. Source research in [Linear](../research/linear.md) and [Bitbucket](../research/bitbucket.md) is not a supported-provider certification.

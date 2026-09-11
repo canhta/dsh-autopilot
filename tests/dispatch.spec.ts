@@ -13,6 +13,7 @@ import {
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Admission, type PausedActiveRun } from '../src/admission.js'
+import { AutopilotConfig } from '../src/config.js'
 import { Dispatch, FIXTURE_MODEL, FIXTURE_PROVIDER } from '../src/dispatch.js'
 import { createFixtureTrackerProvider } from '../src/testing.js'
 import {
@@ -252,6 +253,7 @@ async function bootFixture(
   ctx.llm.registerAdapter([FIXTURE_PROVIDER], adapter)
   await ctx.plugin(Tracker)
   ctx.tracker.register(createFixtureTrackerProvider({ issues }))
+  await ctx.plugin(AutopilotConfig)
   await ctx.plugin(Admission)
   await ctx.plugin(Dispatch)
   await ctx.admission.reconcile({ source: 'manual' })
@@ -802,6 +804,7 @@ describe('durable fixture dispatch', () => {
     resumed.llm.registerAdapter([FIXTURE_PROVIDER], adapter)
     await resumed.plugin(Tracker)
     resumed.tracker.register(createFixtureTrackerProvider({ issues: [candidate()] }))
+    await resumed.plugin(AutopilotConfig)
     await resumed.plugin(Admission)
     await resumed.plugin(Dispatch)
     const resumeAgent = resumed.agents.resume.bind(resumed.agents)
@@ -1110,6 +1113,7 @@ describe('durable fixture dispatch', () => {
     contexts.push(ctx)
     await ctx.plugin(Tracker)
     ctx.tracker.register(createFixtureTrackerProvider({ issues: [restartCandidate()] }))
+    await ctx.plugin(AutopilotConfig)
     await ctx.plugin(Admission)
 
     const interrupted = ctx.admission.snapshot().runs[0]
