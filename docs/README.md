@@ -2,6 +2,8 @@
 
 Read [scope](specs/scope.md) for product responsibilities and [CONTEXT](../CONTEXT.md) for terminology. Then select the material relevant to the GitHub issue being worked on.
 
+New contributors: start with [Contributing](CONTRIBUTING.md) for checkout, change verification and PR submission.
+
 ## Where information belongs
 
 | Information | Authoritative location |
@@ -21,6 +23,7 @@ Specs define required behavior and acceptance rules; a rule's existence does not
 
 | Working on | Read |
 | --- | --- |
+| README and contributor onboarding | [Contributing](CONTRIBUTING.md), [OSS information-architecture references](research/oss-readmes.md) |
 | Product boundaries | [Scope](specs/scope.md) |
 | Implementing or reviewing Host, Client, lifecycle, persistence or tests | [Engineering standards](engineering.md), [upstream basis](research/dsh-practices.md) |
 | Admission, human authorization, pause and recovery | [Lifecycle](specs/lifecycle.md) |
