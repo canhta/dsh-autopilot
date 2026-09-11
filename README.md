@@ -1,21 +1,22 @@
 ![dsh-autopilot — Turn tickets into pull requests. Powered by DeepSeek Harness.](docs/assets/banner.png)
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-78dba9?style=flat-square)](LICENSE)
-[![Status: specifications only](https://img.shields.io/badge/status-specifications_only-d8b46a?style=flat-square)](https://github.com/canhta/dsh-autopilot/issues)
+[![CI](https://img.shields.io/github/actions/workflow/status/canhta/dsh-autopilot/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/canhta/dsh-autopilot/actions/workflows/ci.yml)
+[![Status: bootstrap](https://img.shields.io/badge/status-bootstrap-d8b46a?style=flat-square)](https://github.com/canhta/dsh-autopilot/issues)
 [![Built for DeepSeek Harness](https://img.shields.io/badge/built_for-DeepSeek_Harness-6fa8dc?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Contributions welcome](https://img.shields.io/badge/contributions-welcome-78dba9?style=flat-square)](docs/CONTRIBUTING.md)
 
 # dsh-autopilot
 
-dsh-autopilot is an open-source plugin being built for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH). Its goal: move approved tickets from your backlog to review-ready pull requests on your VPS, without supervising every agent turn.
+dsh-autopilot is an open-source plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH). Its goal: move approved tickets from your backlog to review-ready pull requests on your VPS, without supervising every agent turn.
 
 You decide which tickets are ready, when the agent can work and how much it can spend. Autopilot coordinates the work; your repository defines how code is built and checked; people keep control of blockers, review and merge.
 
-> **Pre-release · specifications only.** The design is available; there is no installable plugin yet. The capabilities below describe the intended product, not working features. Follow development in [GitHub Issues](https://github.com/canhta/dsh-autopilot/issues).
+> **Pre-release · bootstrap available.** The repository now ships a loadable DSH bundle and its build/test/package workflow. Ticket intake, execution, provider connections and the Web UI are still planned capabilities, not working features. Follow each implementation slice in [GitHub Issues](https://github.com/canhta/dsh-autopilot/issues).
 
-[Capabilities](#what-youll-be-able-to-do) · [Installation](#installation) · [Local development](#local-development) · [Contributing](#contributing) · [Documentation](docs/README.md)
+[Product direction](#product-direction) · [Installation](#installation) · [Local development](#local-development) · [Contributing](#contributing) · [Documentation](docs/README.md)
 
-## What you'll be able to do
+## Product direction
 
 - **Work from your existing backlog.** Select tickets by a configured label and approved brief. Use Jira or Linear with GitHub or Bitbucket; add providers through Cordis plugins.
 - **Control when work starts.** Set a schedule, execution limits and spending policy. Eligible work waits in a durable queue until it can run.
@@ -52,27 +53,43 @@ This is an issue-driven AI Development Lifecycle (AIDLC) flow for **one project 
 
 ## Installation
 
-An installation command will be published with the first validated plugin release. Cloning this repository does **not** install Autopilot, and installing DSH alone does not add it.
+The bootstrap can be installed from a locally packed artifact. It does not yet automate tickets, so no Jira, GitHub or model credential is required for this verification path.
 
-To evaluate the design before a release:
-
-- Read [provider configuration](docs/specs/providers.md) for tracker and code-host choices.
-- Read [operations and configuration](docs/specs/operations.md) for scheduling, budgets, credentials, notifications and VPS operation.
-
-These are specifications, not a deployable configuration example.
-
-## Local development
-
-For the current documentation-only repository, you need Git and a Markdown editor:
+Prerequisites: Git, [Node.js](https://nodejs.org/) 24 or newer, and [pnpm](https://pnpm.io/). DSH itself is invoked from the npm `latest` tag.
 
 ```sh
 git clone https://github.com/canhta/dsh-autopilot.git
 cd dsh-autopilot
+pnpm install
+mkdir -p .artifacts
+pnpm pack --pack-destination .artifacts
+
+npx --yes @deepseek-ai/dsh@latest --profile autopilot --from-default-profile web --dump-config
+npx --yes @deepseek-ai/dsh@latest plugin --profile autopilot add ./.artifacts/dsh-autopilot-0.0.0.tgz
+npx --yes @deepseek-ai/dsh@latest --profile autopilot --dump-config
+npx --yes @deepseek-ai/dsh@latest --profile autopilot --no-open
 ```
 
-Start with the [contributor guide](docs/CONTRIBUTING.md), then use the [documentation map](docs/README.md) to find the relevant specification and source research.
+The third DSH command must show a `dsh-autopilot` bundle layer containing the `autopilot` row. DSH prints the local Web URL when the final command boots. Omit `DSH_HOME` to use DSH's default profile location, or set it to an operator-owned directory before all four DSH commands to isolate the installation.
 
-There is no `package.json`, development server or build/test command yet. Runtime setup and verified commands must accompany the implementation that introduces them; DSH's own development commands are not commands for this repository.
+The future connection flow will live in DSH Web Settings. Editing `.env` is not the intended onboarding path; see [operations and configuration](docs/specs/operations.md) for the planned credential ownership model.
+
+## Local development
+
+Install the checkout and run all local gates:
+
+```sh
+git clone https://github.com/canhta/dsh-autopilot.git
+cd dsh-autopilot
+pnpm install
+pnpm run hooks:install
+pnpm run check
+mkdir -p .artifacts
+pnpm pack --pack-destination .artifacts
+pnpm run verify:package
+```
+
+`pnpm run check` runs Biome, strict type checking, the test suite and a clean production build. `pnpm pack` repeats the static gates and builds the distributable tarball. `pnpm run verify:package` installs that artifact into a disposable DSH profile, boots its built Host entry, and proves that package resolution rejects a missing Host entry with the expected diagnostic. Start with the [contributor guide](docs/CONTRIBUTING.md), then use the [documentation map](docs/README.md) to find the relevant specification and source research.
 
 ## Contributing
 

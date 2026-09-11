@@ -1,0 +1,68 @@
+{
+  "name": "dsh-autopilot",
+  "version": "0.0.0",
+  "description": "Turn approved tracker tickets into review-ready pull requests with DeepSeek Harness.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "node --eval \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
+    "build": "pnpm run clean && tsc -p tsconfig.build.json",
+    "format": "biome check --write .",
+    "lint": "biome ci .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
+    "hooks:install": "lefthook install",
+    "verify:package": "node scripts/verify-package.mjs",
+    "prepare": "pnpm run build",
+    "prepack": "pnpm run lint && pnpm run typecheck && pnpm run test"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/canhta/dsh-autopilot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/canhta/dsh-autopilot/issues"
+  },
+  "homepage": "https://github.com/canhta/dsh-autopilot#readme",
+  "keywords": [
+    "ai-agent",
+    "deepseek",
+    "dsh-plugin",
+    "self-hosted",
+    "workflow-automation"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "latest",
+    "@deepseek-ai/cordis": "^4.0.2",
+    "lefthook": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  }
+}
