@@ -103,6 +103,7 @@ export interface PausedQueuedRun extends Omit<QueuedRun, 'state' | 'queueClass'>
 }
 
 export type ActivePauseReason = 'operator' | 'scheduler'
+export type ActiveResumeAuthorization = 'operator' | 'scheduler'
 
 export interface ActivePauseSnapshot {
   readonly kind: 'active'
@@ -133,12 +134,15 @@ export interface GitExecutionSnapshot {
 
 export interface RunRecoverySnapshot {
   readonly kind: 'required'
-  readonly reason: 'host-restart'
+  readonly reason: 'host-restart' | 'session-unavailable' | 'workspace-unavailable' | 'worktree-mismatch'
   readonly interruptedAt: string
 }
 
+export type ActiveRecoveryReason = Exclude<RunRecoverySnapshot['reason'], 'host-restart'>
+
 export interface RunBudgetSnapshot {
   readonly capTokens: number
+  readonly allowanceTokens: number
   readonly reservedTokens: number
   readonly settledTokens: number
   readonly usageUncertain: boolean
@@ -290,7 +294,7 @@ const executionSchema = z.object({
   recovery: z
     .object({
       kind: z.literal('required'),
-      reason: z.literal('host-restart'),
+      reason: z.enum(['host-restart', 'session-unavailable', 'workspace-unavailable', 'worktree-mismatch']),
       interruptedAt: z.iso.datetime({ offset: true }),
     })
     .optional(),
@@ -298,6 +302,7 @@ const executionSchema = z.object({
 
 const runBudgetSchema = z.object({
   capTokens: z.number().int().positive(),
+  allowanceTokens: z.number().int().positive(),
   reservedTokens: z.number().int().nonnegative(),
   settledTokens: z.number().int().nonnegative(),
   usageUncertain: z.boolean(),
@@ -388,7 +393,7 @@ const schedulerSchema = z.object({
 
 const stateSchema = z
   .object({
-    schemaVersion: z.literal(4),
+    schemaVersion: z.literal(5),
     revision: z.number().int().nonnegative(),
     nextSequence: z.number().int().positive(),
     runs: z.array(runSchema).max(100),
@@ -453,11 +458,14 @@ const stateSchema = z
       ) {
         addIntegrityIssue('active operator pause reason and hold must agree')
       }
-      if (
-        (run.state === 'implementing' || run.state === 'pausing') &&
-        (run.budget.settledTokens !== 0 || run.budget.usageUncertain)
-      ) {
-        addIntegrityIssue('active runs cannot carry settled or uncertain usage')
+      if ((run.state === 'implementing' || run.state === 'pausing') && run.budget.usageUncertain) {
+        addIntegrityIssue('active runs cannot carry uncertain usage')
+      }
+      if ('budget' in run && run.budget.settledTokens + run.budget.reservedTokens > run.budget.capTokens) {
+        addIntegrityIssue('run settled usage and reservation must stay within its retained cap')
+      }
+      if ('budget' in run && run.budget.reservedTokens > run.budget.allowanceTokens) {
+        addIntegrityIssue('run reservation must stay within its immutable attempt allowance')
       }
       if (run.state === 'publishing' && run.outcome.kind !== 'verified') {
         addIntegrityIssue('publishing runs require a verified outcome')
@@ -475,7 +483,7 @@ type AdmissionState = z.infer<typeof stateSchema>
 
 const admissionDomainSpec = defineDomain({
   name: 'autopilot_admission',
-  version: 4,
+  version: 5,
   tables: {
     state: domainTable<typeof STATE_KEY, AdmissionState>(stateSchema),
   },
@@ -488,7 +496,7 @@ interface EligibleIssue {
 
 function initialState(): AdmissionState {
   return {
-    schemaVersion: 4,
+    schemaVersion: 5,
     revision: 0,
     nextSequence: 1,
     runs: [],
@@ -670,7 +678,7 @@ export class Admission extends Service {
         budget: {
           ...run.budget,
           reservedTokens: usageKnown ? 0 : run.budget.reservedTokens,
-          settledTokens: usageKnown ? usage.tokens : 0,
+          settledTokens: usageKnown ? run.budget.settledTokens + usage.tokens : run.budget.settledTokens,
           usageUncertain: !usageKnown,
           ...(usageKnown ? {} : { usageUncertaintyReason: usageUncertaintyReason(run, usage) }),
         },
@@ -810,6 +818,134 @@ export class Admission extends Service {
   }
 
   /**
+   * Revalidate an allocated pause against the current tracker and execution policy, then atomically reserve the retained
+   * run's remaining token cap and return it to `implementing`. The caller must first prove the retained Session readable
+   * and supply exact current Git facts. Scheduler authorization cannot clear an operator hold; explicit operator
+   * authorization can. Any failed or concurrent check leaves the pause unchanged.
+   */
+  async resumeActiveRun(
+    runId: RunId,
+    observedGit: GitExecutionSnapshot,
+    authorization: ActiveResumeAuthorization,
+  ): Promise<ImplementingRun> {
+    const parsedRunId = runIdSchema.parse(runId)
+    const parsedGit = executionSchema.shape.git.unwrap().parse(observedGit)
+    const settings = this.currentSettings()
+    validateFixtureExecutionSettings(settings)
+    const providerId = trackerProviderId(settings.trackerProvider)
+    const beforeRead = this.currentState()
+    if (beforeRead.scheduler.mode !== 'enabled') throw new Error('scheduler must be enabled to resume a run')
+    if (beforeRead.budget.usageUncertain) {
+      throw new Error('deployment token usage is uncertain; reconcile it before resuming')
+    }
+    const retained = beforeRead.runs.find((run) => run.runId === parsedRunId)
+    if (!isPausedActiveRun(retained)) throw new Error(`run "${parsedRunId}" is not an allocated paused run`)
+    validateActiveResumeFacts(retained, parsedGit, settings, authorization)
+
+    return this.ctx.tracker.withProvider(providerId, async (reader) => {
+      const candidates = await this.readEveryCandidate(reader, providerId)
+      const matches = candidates.filter(
+        (issue) => issue.bindingId === retained.bindingId && issue.issueId === retained.issueId,
+      )
+      if (matches.length !== 1) {
+        throw new Error(`run "${parsedRunId}" cannot be resumed because its tracker issue is not uniquely current`)
+      }
+      const issue = matches[0]
+      if (issue === undefined) throw new Error(`run "${parsedRunId}" cannot be resumed without its tracker issue`)
+      const evaluation = evaluateIssue(issue, settings.maxBriefBytes)
+      if ('reason' in evaluation || !matchesRetainedIssue(retained, providerId, evaluation)) {
+        throw new Error(`run "${parsedRunId}" cannot be resumed because its tracker authorization changed`)
+      }
+
+      let resumed: ImplementingRun | undefined
+      await this.currentTable().update(STATE_KEY, (current) => {
+        const currentSettings = this.currentSettings()
+        if (current.scheduler.mode !== 'enabled') throw new Error('scheduler must be enabled to resume a run')
+        if (current.budget.usageUncertain) {
+          throw new Error('deployment token usage is uncertain; reconcile it before resuming')
+        }
+        if (trackerProviderId(currentSettings.trackerProvider) !== providerId) {
+          throw new Error(`run "${parsedRunId}" cannot be resumed because the selected tracker provider changed`)
+        }
+        const currentEvaluation = evaluateIssue(issue, currentSettings.maxBriefBytes)
+        const index = current.runs.findIndex((run) => run.runId === parsedRunId)
+        const run = current.runs[index]
+        if (!isPausedActiveRun(run)) throw new Error(`run "${parsedRunId}" is no longer paused`)
+        if (
+          'reason' in currentEvaluation ||
+          !matchesRetainedIssue(run, providerId, currentEvaluation) ||
+          JSON.stringify(run) !== JSON.stringify(retained)
+        ) {
+          throw new Error(`run "${parsedRunId}" cannot be resumed because its retained authorization changed`)
+        }
+        validateActiveResumeFacts(run, parsedGit, currentSettings, authorization)
+        const reservation = Math.min(run.budget.allowanceTokens, run.budget.capTokens - run.budget.settledTokens)
+        if (
+          current.budget.settledTokens + current.budget.reservedTokens + reservation >
+          currentSettings.deploymentTokenCap
+        ) {
+          throw new Error('deployment token cap cannot cover the retained run continuation')
+        }
+
+        const { pause: _pause, ...allocated } = structuredClone(run)
+        resumed = {
+          ...allocated,
+          state: 'implementing',
+          queueClass: 'resumption',
+          execution: { ...allocated.execution, attempt: allocated.execution.attempt + 1 },
+          budget: { ...allocated.budget, reservedTokens: reservation },
+        }
+        const next = structuredClone(current)
+        next.runs[index] = resumed
+        next.budget.reservedTokens += reservation
+        next.revision += 1
+        return stateSchema.parse(next)
+      })
+      if (resumed === undefined) throw new Error(`run "${parsedRunId}" was not resumed`)
+      return structuredClone(resumed)
+    })
+  }
+
+  /**
+   * Persist a definite retained-resource incompatibility discovered before an allocated pause can resume. The run must
+   * still be the same durable active pause; an identical recovery reason is idempotent. This operation starts no Agent,
+   * releases no retained identity, and accepts no caller cancellation signal.
+   */
+  async requireActiveRecovery(runId: RunId, reason: ActiveRecoveryReason): Promise<PausedActiveRun> {
+    const parsedRunId = runIdSchema.parse(runId)
+    const parsedReason = z
+      .enum(['session-unavailable', 'workspace-unavailable', 'worktree-mismatch'])
+      .parse(reason) as ActiveRecoveryReason
+    let recovery: PausedActiveRun | undefined
+    await this.currentTable().update(STATE_KEY, (current) => {
+      const index = current.runs.findIndex((run) => run.runId === parsedRunId)
+      const run = current.runs[index]
+      if (!isPausedActiveRun(run)) throw new Error(`run "${parsedRunId}" is no longer an allocated pause`)
+      if (run.execution.recovery?.reason === parsedReason) {
+        recovery = structuredClone(run)
+        return current
+      }
+      if (run.execution.recovery !== undefined) {
+        throw new Error(`run "${parsedRunId}" already requires ${run.execution.recovery.reason} recovery`)
+      }
+
+      recovery = {
+        ...structuredClone(run),
+        execution: {
+          ...structuredClone(run.execution),
+          recovery: { kind: 'required', reason: parsedReason, interruptedAt: new Date().toISOString() },
+        },
+      }
+      const next = structuredClone(current)
+      next.runs[index] = recovery
+      next.revision += 1
+      return stateSchema.parse(next)
+    })
+    if (recovery === undefined) throw new Error(`run "${parsedRunId}" recovery requirement was not recorded`)
+    return structuredClone(recovery)
+  }
+
+  /**
    * Atomically claim the highest-priority queued run and reserve its configured fixture allowance.
    * Returns undefined when the scheduler is not enabled or the queue is empty. Otherwise, explicit fixture execution
    * paths and positive caps are required. The claim stores immutable run/Session/worktree identities and its reservation
@@ -843,6 +979,7 @@ export class Admission extends Service {
         execution: executionFor(queued, settings),
         budget: {
           capTokens: settings.perRunTokenCap,
+          allowanceTokens: settings.runTokenAllowance,
           reservedTokens: settings.runTokenAllowance,
           settledTokens: 0,
           usageUncertain: false,
@@ -907,7 +1044,7 @@ export class Admission extends Service {
       }
       const usageKnown = validUsageSettlement(run, usage)
       const reservedTokens = usageKnown ? 0 : run.budget.reservedTokens
-      const settledTokens = usageKnown ? usage.tokens : 0
+      const settledTokens = usageKnown ? run.budget.settledTokens + usage.tokens : run.budget.settledTokens
       const terminalOutcome: ExecutionOutcome = usageKnown
         ? parsedOutcome
         : {
@@ -1131,8 +1268,8 @@ function activePause(reason: ActivePauseReason, requestedAt: string): ActivePaus
   }
 }
 
-function isPausedActiveRun(run: AutopilotRun): run is PausedActiveRun {
-  return run.state === 'paused' && run.pause.kind === 'active'
+function isPausedActiveRun(run: AutopilotRun | undefined): run is PausedActiveRun {
+  return run?.state === 'paused' && run.pause.kind === 'active'
 }
 
 function isPausedQueuedRun(run: AutopilotRun | undefined): run is PausedQueuedRun {
@@ -1148,7 +1285,7 @@ function validUsageSettlement(
     Number.isSafeInteger(usage.tokens) &&
     usage.tokens >= 0 &&
     usage.tokens <= run.budget.reservedTokens &&
-    usage.tokens <= run.budget.capTokens
+    run.budget.settledTokens + usage.tokens <= run.budget.capTokens
   )
 }
 
@@ -1156,6 +1293,41 @@ function usageUncertaintyReason(run: ImplementingRun | PausingRun, usage: RunUsa
   return usage.kind === 'uncertain'
     ? truncateUtf8(usage.reason, MAX_OUTCOME_TEXT_BYTES) || 'provider did not supply a usage uncertainty reason'
     : `reported usage exceeded the reserved allowance of ${String(run.budget.reservedTokens)} tokens`
+}
+
+function validateActiveResumeFacts(
+  run: PausedActiveRun,
+  observedGit: GitExecutionSnapshot,
+  settings: AdmissionSettings,
+  authorization: ActiveResumeAuthorization,
+): void {
+  if (authorization !== 'operator' && authorization !== 'scheduler') {
+    throw new TypeError('active resume authorization must be operator or scheduler')
+  }
+  if (authorization === 'scheduler' && run.pause.operatorHold) {
+    throw new Error(`run "${run.runId}" requires explicit operator resume`)
+  }
+  if (run.execution.recovery !== undefined) throw new Error(`run "${run.runId}" requires explicit recovery`)
+  if (run.budget.usageUncertain) throw new Error(`run "${run.runId}" has uncertain token usage`)
+  if (run.budget.settledTokens >= run.budget.capTokens) {
+    throw new Error(`run "${run.runId}" has no retained token capacity`)
+  }
+  if (
+    run.execution.targetRepository !== settings.targetRepository ||
+    run.execution.baseBranch !== settings.targetBaseBranch ||
+    run.execution.worktreePath !== join(settings.managedWorktreeRoot, run.runId)
+  ) {
+    throw new Error(`run "${run.runId}" retained execution routing no longer matches current policy`)
+  }
+  const retainedGit = run.execution.git
+  if (
+    retainedGit === undefined ||
+    retainedGit.baseHead !== observedGit.baseHead ||
+    retainedGit.head !== observedGit.head ||
+    retainedGit.status !== observedGit.status
+  ) {
+    throw new Error(`run "${run.runId}" retained Git state changed and requires explicit recovery`)
+  }
 }
 
 function evaluateIssue(

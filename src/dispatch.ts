@@ -1,13 +1,16 @@
-import { mkdir } from 'node:fs/promises'
+import { mkdir, realpath } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type GenerateOptions, type StreamChunk, type TokenUsage } from '@deepseek-ai/dsh-llm'
+import type { SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persistence'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Workspace } from '@deepseek-ai/dsh-workspace'
 import type {
+  ActiveRecoveryReason,
+  ActiveResumeAuthorization,
   AdmissionSnapshot,
   AutopilotRun,
   ExecutionOutcome,
@@ -84,6 +87,14 @@ export class Dispatch extends Service {
    * operation accepts no caller cancellation signal.
    */
   async dispatchNext(): Promise<DispatchResult | undefined> {
+    const snapshot = this.ctx.admission.snapshot()
+    if (snapshot.scheduler.mode === 'enabled') {
+      const continuation = snapshot.runs.find(
+        (run): run is PausedActiveRun =>
+          isPausedActive(run) && !run.pause.operatorHold && run.execution.recovery === undefined,
+      )
+      if (continuation !== undefined) return await this.resumePaused(continuation.runId, 'scheduler')
+    }
     const claimed = await this.ctx.admission.claimNext()
     if (claimed === undefined) return undefined
     const active = activeExecution()
@@ -122,6 +133,112 @@ export class Dispatch extends Service {
     return paused
   }
 
+  /**
+   * Resume one allocated pause through DSH's persisted Session path after proving the retained Session and Git worktree
+   * are still usable. The same run, Session, worktree, and branch are retained; no fallback identity is created. Tracker,
+   * scheduler, routing, Git, and budget gates are revalidated before the resumed Agent receives continuation input.
+   * Definite retained-resource failures persist an explicit recovery requirement; other preflight failures preserve the
+   * pause. The operation owns the resumed root through disposal and accepts no caller cancellation signal.
+   */
+  async resumeRun(runId: RunId): Promise<DispatchResult> {
+    return await this.resumePaused(runId, 'operator')
+  }
+
+  private async resumePaused(runId: RunId, authorization: ActiveResumeAuthorization): Promise<DispatchResult> {
+    const snapshot = this.ctx.admission.snapshot()
+    if (snapshot.scheduler.mode !== 'enabled') throw new Error('scheduler must be enabled to resume a run')
+    if (snapshot.budget.usageUncertain) {
+      throw new Error('deployment token usage is uncertain; reconcile it before resuming')
+    }
+    const paused = currentRun(snapshot, runId)
+    if (!isPausedActive(paused)) throw new Error(`run "${runId}" is not an allocated paused run`)
+    if (paused.execution.recovery !== undefined) {
+      throw new Error(`run "${runId}" requires explicit ${paused.execution.recovery.reason} recovery`)
+    }
+    const remainingTokens = paused.budget.capTokens - paused.budget.settledTokens
+    if (remainingTokens <= 0) throw new Error(`run "${runId}" has no retained token capacity`)
+    const continuationAllowance = Math.min(paused.budget.allowanceTokens, remainingTokens)
+    const persisted: SessionPersistenceSnapshot | undefined = await this.ctx.sessionPersistence.stat(
+      paused.execution.sessionId,
+    )
+    if (persisted?.header.id !== paused.execution.sessionId || persisted.header.cwd !== paused.execution.worktreePath) {
+      return await this.rejectResumeForRecovery(
+        paused,
+        'session-unavailable',
+        `run "${runId}" retained Session is unavailable or incompatible and requires explicit recovery`,
+      )
+    }
+    const retainedGit = paused.execution.git
+    if (retainedGit === undefined) throw new Error(`run "${runId}" has no retained Git checkpoint`)
+    const workspace = await this.ctx.workspaceRegistry.resolveByPath(paused.execution.worktreePath)
+    if (workspace === undefined || !workspace.sessionIds.includes(paused.execution.sessionId)) {
+      return await this.rejectResumeForRecovery(
+        paused,
+        'workspace-unavailable',
+        `run "${runId}" retained workspace ownership is unavailable and requires explicit recovery`,
+      )
+    }
+    let observedGit: GitExecutionSnapshot
+    try {
+      observedGit = await inspectRetainedWorktree(this.ctx.subprocess, paused)
+    } catch (error) {
+      return await this.rejectResumeForRecovery(
+        paused,
+        'worktree-mismatch',
+        `run "${runId}" retained worktree is unavailable or incompatible and requires explicit recovery: ${errorMessage(error)}`,
+      )
+    }
+    if (!sameGit(retainedGit, observedGit)) {
+      return await this.rejectResumeForRecovery(
+        paused,
+        'worktree-mismatch',
+        `run "${runId}" retained Git state changed and requires explicit recovery`,
+      )
+    }
+    const usage: UsageRecorder = { usage: [], requests: 0 }
+    const report: ReportRecorder = {}
+    const handle = await this.ctx.agents.resume({
+      resumeSessionId: paused.execution.sessionId,
+      agentOptions: {
+        provider: FIXTURE_PROVIDER,
+        model: FIXTURE_MODEL,
+        maxTokens: continuationAllowance,
+      },
+      setup: (agentCtx) => {
+        registerUsageRecorder(agentCtx, paused, usage)
+        agentCtx.tools.register(createReportTool(report))
+      },
+    })
+
+    let resumed: ImplementingRun
+    try {
+      resumed = await this.ctx.admission.resumeActiveRun(runId, observedGit, authorization)
+    } catch (error) {
+      await handle.dispose()
+      throw error
+    }
+    const active = activeExecution()
+    active.handle = handle
+    this.active.set(runId, active)
+    try {
+      return await this.executeOwnedTurn(
+        resumed,
+        active,
+        handle,
+        usage,
+        report,
+        retainedGit.baseHead,
+        continuationPrompt(resumed),
+        'pause requested before continuation',
+        'Fixture continuation failed.',
+        workspace,
+      )
+    } finally {
+      this.active.delete(runId)
+      active.complete()
+    }
+  }
+
   private async pauseOwnedExecution(runId: RunId, reason: string): Promise<void> {
     const active = this.active.get(runId)
     if (active === undefined) {
@@ -140,18 +257,26 @@ export class Dispatch extends Service {
     }
   }
 
+  private async rejectResumeForRecovery(
+    paused: PausedActiveRun,
+    reason: ActiveRecoveryReason,
+    message: string,
+  ): Promise<never> {
+    await this.ctx.admission.requireActiveRecovery(paused.runId, reason)
+    throw new Error(message)
+  }
+
   private async executeClaimed(claimed: ImplementingRun, active: ActiveExecution): Promise<DispatchResult> {
     let run: ImplementingRun | PausingRun = claimed
-
     const usage: UsageRecorder = { usage: [], requests: 0 }
     const report: ReportRecorder = {}
     let git: GitExecutionSnapshot | undefined
-    let rootQuiescent = false
-    let sessionDurable = false
-    let finalGitObserved = false
+    let baseHead: string
+    let handle: AgentHandle
+    let workspace: Workspace
     try {
       await mkdir(dirname(run.execution.worktreePath), { recursive: true })
-      const baseHead = (
+      baseHead = (
         await gitCommand(this.ctx.subprocess, run.execution.targetRepository, ['rev-parse', run.execution.baseBranch])
       ).trim()
       await gitCommand(this.ctx.subprocess, run.execution.targetRepository, [
@@ -165,8 +290,8 @@ export class Dispatch extends Service {
       git = await inspectGit(this.ctx.subprocess, run.execution.worktreePath, baseHead)
       run = await this.ctx.admission.recordWorktree(run.runId, git)
 
-      const workspace: Workspace = await this.ctx.workspaceRegistry.create(run.execution.worktreePath, run.displayKey)
-      const handle = await this.ctx.agents.create({
+      workspace = await this.ctx.workspaceRegistry.create(run.execution.worktreePath, run.displayKey)
+      handle = await this.ctx.agents.create({
         sessionId: run.execution.sessionId,
         meta: { cwd: run.execution.worktreePath },
         agentOptions: {
@@ -180,16 +305,53 @@ export class Dispatch extends Service {
         },
       })
       active.handle = handle
+    } catch (error) {
+      return await this.settleExecutionFailure(run, git, usage, error, 'Fixture dispatch failed.')
+    }
+
+    return await this.executeOwnedTurn(
+      run,
+      active,
+      handle,
+      usage,
+      report,
+      baseHead,
+      executionPrompt(run),
+      'pause requested before Agent start',
+      'Fixture dispatch failed.',
+      workspace,
+    )
+  }
+
+  private async executeOwnedTurn(
+    run: ImplementingRun | PausingRun,
+    active: ActiveExecution,
+    handle: AgentHandle,
+    usage: UsageRecorder,
+    report: ReportRecorder,
+    baseHead: string,
+    prompt: string,
+    cancellationReason: string,
+    failureSummary: string,
+    existingWorkspace?: Workspace,
+  ): Promise<DispatchResult> {
+    let git = run.execution.git
+    let rootQuiescent = false
+    let sessionDurable = false
+    let finalGitObserved = false
+    try {
+      const workspace =
+        existingWorkspace ?? (await this.ctx.workspaceRegistry.create(run.execution.worktreePath, run.displayKey))
       try {
         await workspace.attachSession(run.execution.sessionId)
         const current = currentRun(this.ctx.admission.snapshot(), run.runId)
         if (current.state === 'pausing' || active.pauseRequested) {
           active.pauseRequested = true
-          handle.agent.cancel({ kind: 'hook', reason: 'pause requested before Agent start' }, { keepInbox: true })
+          handle.agent.cancel({ kind: 'hook', reason: cancellationReason }, { keepInbox: true })
         } else {
           handle.agent.followup(
             createUserMessage({
-              content: [{ type: 'text', text: executionPrompt(run) }],
+              content: [{ type: 'text', text: prompt }],
               source: { kind: 'plugin', plugin: 'dsh-autopilot' },
             }),
           )
@@ -210,32 +372,47 @@ export class Dispatch extends Service {
       if (recorded.state === 'pausing') {
         return await this.ctx.admission.checkpointPaused(run.runId, git, usageSettlement(usage))
       }
-      const outcome = validatedOutcome(report, git)
-      return await this.ctx.admission.settle(run.runId, outcome, usageSettlement(usage))
+      return await this.ctx.admission.settle(run.runId, validatedOutcome(report, git), usageSettlement(usage))
     } catch (error) {
-      const message = errorMessage(error)
-      if (git !== undefined) {
-        try {
-          git = await inspectGit(this.ctx.subprocess, run.execution.worktreePath, git.baseHead)
-          finalGitObserved = true
-          await this.ctx.admission.recordWorktree(run.runId, git)
-        } catch {
-          // The original actionable failure remains authoritative; best-effort evidence must not replace it.
-        }
-      }
-      const current = currentRun(this.ctx.admission.snapshot(), run.runId)
-      if (current.state === 'pausing') {
-        if (rootQuiescent && sessionDurable && finalGitObserved && git !== undefined) {
-          return await this.ctx.admission.checkpointPaused(run.runId, git, usageSettlement(usage))
-        }
-        throw error
-      }
-      return await this.ctx.admission.settle(
-        run.runId,
-        { kind: 'failed', summary: 'Fixture dispatch failed.', evidence: [truncateUtf8(message)] },
-        usageSettlement(usage),
-      )
+      return await this.settleExecutionFailure(run, git, usage, error, failureSummary, {
+        rootQuiescent,
+        sessionDurable,
+        finalGitObserved,
+      })
     }
+  }
+
+  private async settleExecutionFailure(
+    run: ImplementingRun | PausingRun,
+    git: GitExecutionSnapshot | undefined,
+    usage: UsageRecorder,
+    error: unknown,
+    failureSummary: string,
+    checkpoint = { rootQuiescent: false, sessionDurable: false, finalGitObserved: false },
+  ): Promise<DispatchResult> {
+    let observedGit = git
+    let finalGitObserved = checkpoint.finalGitObserved
+    if (observedGit !== undefined) {
+      try {
+        observedGit = await inspectGit(this.ctx.subprocess, run.execution.worktreePath, observedGit.baseHead)
+        finalGitObserved = true
+        await this.ctx.admission.recordWorktree(run.runId, observedGit)
+      } catch {
+        // The original actionable failure remains authoritative; best-effort evidence must not replace it.
+      }
+    }
+    const current = currentRun(this.ctx.admission.snapshot(), run.runId)
+    if (current.state === 'pausing') {
+      if (checkpoint.rootQuiescent && checkpoint.sessionDurable && finalGitObserved && observedGit !== undefined) {
+        return await this.ctx.admission.checkpointPaused(run.runId, observedGit, usageSettlement(usage))
+      }
+      throw error
+    }
+    return await this.ctx.admission.settle(
+      run.runId,
+      { kind: 'failed', summary: failureSummary, evidence: [truncateUtf8(errorMessage(error))] },
+      usageSettlement(usage),
+    )
   }
 }
 
@@ -259,6 +436,45 @@ function currentRun(snapshot: AdmissionSnapshot, runId: RunId): AutopilotRun {
 
 function isPausedActive(run: AutopilotRun | undefined): run is PausedActiveRun {
   return run?.state === 'paused' && run.pause.kind === 'active'
+}
+
+function sameGit(left: GitExecutionSnapshot, right: GitExecutionSnapshot): boolean {
+  return left.baseHead === right.baseHead && left.head === right.head && left.status === right.status
+}
+
+async function inspectRetainedWorktree(
+  subprocess: SubprocessRuntime,
+  run: PausedActiveRun,
+): Promise<GitExecutionSnapshot> {
+  const retainedGit = run.execution.git
+  if (retainedGit === undefined) throw new Error('the retained run has no Git checkpoint')
+  const observedRoot = await gitCommand(subprocess, run.execution.worktreePath, ['rev-parse', '--show-toplevel'])
+  const observedBranch = await gitCommand(subprocess, run.execution.worktreePath, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  const observedCommonDirectory = await gitCommand(subprocess, run.execution.worktreePath, [
+    'rev-parse',
+    '--path-format=absolute',
+    '--git-common-dir',
+  ])
+  const targetCommonDirectory = await gitCommand(subprocess, run.execution.targetRepository, [
+    'rev-parse',
+    '--path-format=absolute',
+    '--git-common-dir',
+  ])
+  const [canonicalRoot, canonicalWorktree, canonicalCommonDirectory, canonicalTargetCommonDirectory] =
+    await Promise.all([
+      realpath(observedRoot.trim()),
+      realpath(run.execution.worktreePath),
+      realpath(observedCommonDirectory.trim()),
+      realpath(targetCommonDirectory.trim()),
+    ])
+  if (
+    canonicalRoot !== canonicalWorktree ||
+    canonicalCommonDirectory !== canonicalTargetCommonDirectory ||
+    observedBranch.trim() !== run.execution.branch
+  ) {
+    throw new Error('the retained path is not the recorded managed Git worktree and branch')
+  }
+  return await inspectGit(subprocess, run.execution.worktreePath, retainedGit.baseHead)
 }
 
 function createReportTool(recorder: ReportRecorder) {
@@ -313,7 +529,11 @@ function createReportTool(recorder: ReportRecorder) {
   })
 }
 
-function registerUsageRecorder(agentCtx: Context, run: ImplementingRun | PausingRun, recorder: UsageRecorder): void {
+function registerUsageRecorder(
+  agentCtx: Context,
+  run: ImplementingRun | PausingRun | PausedActiveRun,
+  recorder: UsageRecorder,
+): void {
   agentCtx.on('llm/stream', async function* (options: GenerateOptions, next): AsyncIterable<StreamChunk> {
     recorder.requests += 1
     if (
@@ -388,6 +608,12 @@ function executionPrompt(run: ImplementingRun | PausingRun): string {
   const git = run.execution.git
   if (git === undefined) throw new Error('the managed worktree has no durable Git facts')
   return `Execute the approved Agent Brief below in the managed fixture worktree. Use autopilot_report exactly once with a verified, blocked, or failed outcome before finishing. A verified report must repeat the exact final Git head and porcelain status.\n\nManaged Git head: ${git.head}\nManaged Git status: ${JSON.stringify(git.status)}\n\n${run.brief.content}`
+}
+
+function continuationPrompt(run: ImplementingRun): string {
+  const git = run.execution.git
+  if (git === undefined) throw new Error('the managed worktree has no durable Git facts')
+  return `Continue the approved Agent Brief in this same persisted Session and managed worktree. Reconcile any interrupted operation from the prior pause before repeating a side effect. Use autopilot_report exactly once with a verified, blocked, or failed outcome before finishing. A verified report must repeat the exact final Git head and porcelain status.\n\nManaged Git head: ${git.head}\nManaged Git status: ${JSON.stringify(git.status)}\n\n${run.brief.content}`
 }
 
 async function inspectGit(
