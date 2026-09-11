@@ -17,7 +17,7 @@ pnpm install
 pnpm run hooks:install
 ```
 
-No API credentials are needed for documentation or the bootstrap test suite.
+No API credentials are needed for documentation or the local test suite. Jira behavior tests use controlled responses and a private in-memory credential boundary; they do not contact Atlassian.
 
 ## Find the right context
 
