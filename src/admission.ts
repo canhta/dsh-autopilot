@@ -496,6 +496,11 @@ export class Admission extends Service {
     return snapshotOf(committed)
   }
 
+  /**
+   * Atomically place one queued run on a durable operator hold before Session or worktree allocation.
+   * The run must exist and still be queued. Invalid input, a different lifecycle state, or durable-write failure leaves
+   * the run unchanged. The returned paused run is detached; this operation has no external effects or cancellation point.
+   */
   async holdQueued(runId: RunId): Promise<PausedQueuedRun> {
     const parsedRunId = runIdSchema.parse(runId)
     let held: PausedQueuedRun | undefined
@@ -525,6 +530,13 @@ export class Admission extends Service {
     return structuredClone(held)
   }
 
+  /**
+   * Revalidate an operator-held queued run against the current tracker issue and return it to the resumption queue.
+   * Requires an enabled scheduler, certain deployment usage, the selected tracker provider, one currently eligible issue,
+   * and an unchanged readiness generation and Agent Brief. Provider/read/validation failures or a concurrent durable
+   * state change preserve the hold. Success clears only the hold, keeps the run identity, and allocates no Session or
+   * worktree. Provider withdrawal owns cancellation of its read; callers cannot independently cancel this operation.
+   */
   async resumeRun(runId: RunId): Promise<QueuedRun> {
     const parsedRunId = runIdSchema.parse(runId)
     const settings = this.currentSettings()
