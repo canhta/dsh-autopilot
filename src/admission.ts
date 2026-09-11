@@ -85,6 +85,7 @@ export interface QueuedRun {
   readonly readinessGeneration: ReadinessGeneration
   readonly brief: AgentBriefSnapshot
   readonly state: 'queued'
+  readonly queueClass: 'new' | 'resumption'
   readonly queuedAt: string
   readonly queueSequence: number
 }
@@ -235,6 +236,7 @@ const runBaseSchema = z.object({
   priorityRank: z.number().int().nonnegative(),
   readinessGeneration: z.string().transform(readinessGeneration),
   brief: briefSchema,
+  queueClass: z.enum(['new', 'resumption']),
   queuedAt: z.iso.datetime({ offset: true }),
   queueSequence: z.number().int().positive(),
 })
@@ -523,6 +525,76 @@ export class Admission extends Service {
     return structuredClone(held)
   }
 
+  async resumeRun(runId: RunId): Promise<QueuedRun> {
+    const parsedRunId = runIdSchema.parse(runId)
+    const settings = this.currentSettings()
+    const providerId = trackerProviderId(settings.trackerProvider)
+    const beforeRead = this.currentState()
+    if (beforeRead.scheduler.mode !== 'enabled') {
+      throw new Error('scheduler must be enabled to resume a run')
+    }
+    if (beforeRead.budget.usageUncertain) {
+      throw new Error('deployment token usage is uncertain; reconcile it before resuming')
+    }
+    const retained = beforeRead.runs.find((run) => run.runId === parsedRunId)
+    if (retained === undefined) throw new Error(`run "${parsedRunId}" does not exist`)
+    if (retained.state !== 'paused' || !retained.pause.operatorHold) {
+      throw new Error(`run "${parsedRunId}" is not paused on an operator hold`)
+    }
+    if (retained.providerId !== providerId) {
+      throw new Error(`run "${parsedRunId}" cannot be resumed from tracker provider "${providerId}"`)
+    }
+
+    return this.ctx.tracker.withProvider(providerId, async (reader) => {
+      const candidates = await this.readEveryCandidate(reader, providerId)
+      const matches = candidates.filter(
+        (issue) => issue.bindingId === retained.bindingId && issue.issueId === retained.issueId,
+      )
+      if (matches.length !== 1) {
+        throw new Error(`run "${parsedRunId}" cannot be resumed because its tracker issue is not uniquely current`)
+      }
+      const issue = matches[0]
+      if (issue === undefined) throw new Error(`run "${parsedRunId}" cannot be resumed without its tracker issue`)
+      const evaluation = evaluateIssue(issue, settings.maxBriefBytes)
+      if ('reason' in evaluation) {
+        throw new Error(`run "${parsedRunId}" cannot be resumed because tracker eligibility is ${evaluation.reason}`)
+      }
+      if (!matchesRetainedIssue(retained, providerId, evaluation)) {
+        throw new Error(`run "${parsedRunId}" cannot be resumed because its tracker authorization changed`)
+      }
+
+      let resumed: QueuedRun | undefined
+      await this.currentTable().update(STATE_KEY, (current) => {
+        if (current.scheduler.mode !== 'enabled') {
+          throw new Error('scheduler must be enabled to resume a run')
+        }
+        if (current.budget.usageUncertain) {
+          throw new Error('deployment token usage is uncertain; reconcile it before resuming')
+        }
+        if (trackerProviderId(this.currentSettings().trackerProvider) !== providerId) {
+          throw new Error(`run "${parsedRunId}" cannot be resumed because the selected tracker provider changed`)
+        }
+        const index = current.runs.findIndex((run) => run.runId === parsedRunId)
+        const run = current.runs[index]
+        if (run?.state !== 'paused' || !run.pause.operatorHold) {
+          throw new Error(`run "${parsedRunId}" is not paused on an operator hold`)
+        }
+        if (!sameRetainedRun(run, retained) || !matchesRetainedIssue(run, providerId, evaluation)) {
+          throw new Error(`run "${parsedRunId}" cannot be resumed because its retained identity changed`)
+        }
+
+        const { pause: _pause, ...queued } = structuredClone(run)
+        resumed = { ...queued, state: 'queued', queueClass: 'resumption' }
+        const next = structuredClone(current)
+        next.runs[index] = resumed
+        next.revision += 1
+        return stateSchema.parse(next)
+      })
+      if (resumed === undefined) throw new Error(`run "${parsedRunId}" was not resumed`)
+      return structuredClone(resumed)
+    })
+  }
+
   /**
    * Atomically claim the highest-priority queued run and reserve its configured fixture allowance.
    * Returns undefined when the scheduler is not enabled or the queue is empty. Otherwise, explicit fixture execution
@@ -543,6 +615,7 @@ export class Admission extends Service {
         .filter((run): run is QueuedRun => run.state === 'queued')
         .sort(
           (left, right) =>
+            queueClassRank(left.queueClass) - queueClassRank(right.queueClass) ||
             left.priorityRank - right.priorityRank ||
             left.queueSequence - right.queueSequence ||
             left.displayKey.localeCompare(right.displayKey),
@@ -748,6 +821,7 @@ export class Admission extends Service {
             readinessGeneration: issue.readiness.generation,
             brief: evaluation.brief,
             state: 'queued',
+            queueClass: 'new',
             queuedAt: new Date().toISOString(),
             queueSequence: next.nextSequence,
           }
@@ -908,8 +982,43 @@ function runIdentityFromRun(
   return JSON.stringify([run.providerId, run.bindingId, run.issueId, run.readinessGeneration])
 }
 
+function matchesRetainedIssue(
+  run: Pick<AutopilotRun, 'providerId' | 'bindingId' | 'issueId' | 'readinessGeneration' | 'brief'>,
+  providerId: TrackerProviderId,
+  evaluation: EligibleIssue,
+): boolean {
+  return (
+    run.providerId === providerId &&
+    run.bindingId === evaluation.issue.bindingId &&
+    run.issueId === evaluation.issue.issueId &&
+    run.readinessGeneration === evaluation.issue.readiness.generation &&
+    sameBrief(run.brief, evaluation.brief)
+  )
+}
+
+function sameRetainedRun(current: PausedQueuedRun, expected: PausedQueuedRun): boolean {
+  return (
+    current.runId === expected.runId &&
+    runIdentityFromRun(current) === runIdentityFromRun(expected) &&
+    sameBrief(current.brief, expected.brief)
+  )
+}
+
+function sameBrief(left: AgentBriefSnapshot, right: AgentBriefSnapshot): boolean {
+  return (
+    left.commentId === right.commentId &&
+    left.updatedAt === right.updatedAt &&
+    left.digest === right.digest &&
+    left.content === right.content
+  )
+}
+
 function runId(identity: string): RunId {
   return `run_${createHash('sha256').update(identity).digest('hex').slice(0, 32)}` as RunId
+}
+
+function queueClassRank(queueClass: QueuedRun['queueClass']): number {
+  return queueClass === 'resumption' ? 0 : 1
 }
 
 function executionFor(run: QueuedRun, settings: AdmissionSettings): RunExecutionSnapshot {

@@ -351,6 +351,215 @@ describe('admission service seam', () => {
     expect(ctx.admission.snapshot()).toEqual(before)
   })
 
+  it('resumes the same run and Brief ahead of higher-priority new work', async () => {
+    const resumedIssue = candidate({
+      issueId: trackerIssueId('resume'),
+      displayKey: 'FIX-RESUME',
+      priorityRank: 9,
+      readiness: {
+        kind: 'transition',
+        generation: readinessGeneration('transition-resume'),
+        actorId: 'person-1',
+        actorKind: 'human',
+        occurredAt: '2026-09-11T00:00:00.000Z',
+      },
+    })
+    const newIssue = candidate({
+      issueId: trackerIssueId('new'),
+      displayKey: 'FIX-NEW',
+      priorityRank: 1,
+      readiness: {
+        kind: 'transition',
+        generation: readinessGeneration('transition-new'),
+        actorId: 'person-1',
+        actorKind: 'human',
+        occurredAt: '2026-09-11T00:00:00.000Z',
+      },
+    })
+    const { ctx, disposeProvider } = await boot(
+      await databasePath(),
+      [resumedIssue],
+      20,
+      fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees', {
+        deploymentTokenCap: 120,
+      }),
+    )
+    await ctx.admission.reconcile({ source: 'manual' })
+    const admitted = ctx.admission.snapshot().runs[0]
+    if (admitted?.state !== 'queued') throw new Error('expected a queued run')
+    await ctx.admission.holdQueued(admitted.runId)
+    await disposeProvider()
+    ctx.tracker.register(fixtureProvider([resumedIssue, newIssue]))
+    await ctx.admission.reconcile({ source: 'manual' })
+
+    expect(ctx.admission.snapshot().runs.map((run) => [run.displayKey, run.queueClass])).toEqual([
+      ['FIX-NEW', 'new'],
+      ['FIX-RESUME', 'resumption'],
+    ])
+
+    const resumed = await ctx.admission.resumeRun(admitted.runId)
+
+    expect(resumed).toEqual({
+      runId: 'run_2a43c5f5acb4d19acd9c606915e90a79',
+      providerId: 'fixture',
+      bindingId: 'fixture:project',
+      issueId: 'resume',
+      displayKey: 'FIX-RESUME',
+      summary: 'Implement durable tracker admission',
+      priorityRank: 9,
+      readinessGeneration: 'transition-resume',
+      brief: {
+        commentId: 'comment-1',
+        updatedAt: '2026-09-11T00:00:00.000Z',
+        digest: '91b0486a0b355a6c11a84b3511ca2703c00d35e09a0a52a5e6ccd8140cb19c32',
+        content: validBrief,
+      },
+      state: 'queued',
+      queueClass: 'resumption',
+      queuedAt: expect.any(String),
+      queueSequence: 1,
+    })
+    const claimed = await ctx.admission.claimNext()
+    expect(claimed).toMatchObject({
+      runId: 'run_2a43c5f5acb4d19acd9c606915e90a79',
+      displayKey: 'FIX-RESUME',
+      queueClass: 'resumption',
+      state: 'implementing',
+      brief: {
+        commentId: 'comment-1',
+        updatedAt: '2026-09-11T00:00:00.000Z',
+        digest: '91b0486a0b355a6c11a84b3511ca2703c00d35e09a0a52a5e6ccd8140cb19c32',
+        content: validBrief,
+      },
+    })
+    expect(ctx.admission.snapshot().runs.find((run) => run.displayKey === 'FIX-RESUME')).toMatchObject({
+      state: 'implementing',
+      queueClass: 'resumption',
+      queueSequence: 1,
+    })
+    expect(ctx.admission.snapshot().runs.find((run) => run.displayKey === 'FIX-NEW')).toMatchObject({
+      state: 'queued',
+      queueClass: 'new',
+      queueSequence: 2,
+    })
+  })
+
+  it.each([
+    {
+      name: 'readiness generation changed',
+      issue: candidate({
+        readiness: {
+          kind: 'transition',
+          generation: readinessGeneration('transition-2'),
+          actorId: 'person-1',
+          actorKind: 'human',
+          occurredAt: '2026-09-11T00:01:00.000Z',
+        },
+      }),
+    },
+    { name: 'issue is no longer ready', issue: candidate({ isReady: false }) },
+    {
+      name: 'provider binding changed',
+      issue: candidate({ bindingId: trackerBindingId('fixture:other-project') }),
+    },
+    { name: 'issue identity changed', issue: candidate({ issueId: trackerIssueId('issue-2') }) },
+    {
+      name: 'Brief identity changed',
+      issue: candidate({ comments: [briefComment({ id: trackerCommentId('comment-2') })] }),
+    },
+    {
+      name: 'Brief version changed',
+      issue: candidate({
+        comments: [briefComment({ updatedAt: '2026-09-11T00:01:00.000Z' })],
+        readiness: {
+          kind: 'transition',
+          generation: readinessGeneration('transition-1'),
+          actorId: 'person-1',
+          actorKind: 'human',
+          occurredAt: '2026-09-11T00:02:00.000Z',
+        },
+      }),
+    },
+    {
+      name: 'Brief content changed',
+      issue: candidate({
+        comments: [
+          briefComment({
+            body: validBrief.replace('Implement durable tracker admission.', 'Implement changed tracker admission.'),
+          }),
+        ],
+      }),
+    },
+  ])('leaves the operator hold unchanged when the current $name', async ({ issue }) => {
+    const { ctx, disposeProvider } = await boot(await databasePath(), [candidate()])
+    await ctx.admission.reconcile({ source: 'manual' })
+    const admitted = ctx.admission.snapshot().runs[0]
+    if (admitted?.state !== 'queued') throw new Error('expected a queued run')
+    await ctx.admission.holdQueued(admitted.runId)
+    await disposeProvider()
+    ctx.tracker.register(fixtureProvider([issue]))
+    const before = ctx.admission.snapshot()
+
+    await expect(ctx.admission.resumeRun(admitted.runId)).rejects.toThrow(/cannot be resumed/i)
+
+    expect(ctx.admission.snapshot()).toEqual(before)
+    expect(ctx.admission.snapshot().runs).toMatchObject([
+      {
+        runId: 'run_6e263a17084c6d6de5a1dbe4908cd269',
+        state: 'paused',
+        queueClass: 'resumption',
+        pause: { reason: 'operator', operatorHold: true, continuationTarget: 'implementing' },
+      },
+    ])
+  })
+
+  it('rechecks scheduler enablement after tracker revalidation without clearing the hold', async () => {
+    const issue = candidate()
+    const { ctx, disposeProvider } = await boot(await databasePath(), [issue])
+    await ctx.admission.reconcile({ source: 'manual' })
+    const admitted = ctx.admission.snapshot().runs[0]
+    if (admitted?.state !== 'queued') throw new Error('expected a queued run')
+    await ctx.admission.holdQueued(admitted.runId)
+    await disposeProvider()
+
+    let signalReadStarted: (() => void) | undefined
+    const readStarted = new Promise<void>((resolve) => {
+      signalReadStarted = resolve
+    })
+    let releaseRead: (() => void) | undefined
+    const readReleased = new Promise<void>((resolve) => {
+      releaseRead = resolve
+    })
+    ctx.tracker.register(
+      createFixtureTrackerProvider({
+        issues: [issue],
+        readCandidates: async () => {
+          signalReadStarted?.()
+          await readReleased
+          return { issues: [issue] }
+        },
+      }),
+    )
+
+    const resume = ctx.admission.resumeRun(admitted.runId)
+    await readStarted
+    await ctx.admission.setSchedulerMode('draining')
+    releaseRead?.()
+    await expect(resume).rejects.toThrow(/scheduler.*enabled/i)
+
+    expect(ctx.admission.snapshot()).toMatchObject({
+      scheduler: { mode: 'draining' },
+      runs: [
+        {
+          runId: 'run_6e263a17084c6d6de5a1dbe4908cd269',
+          state: 'paused',
+          queueClass: 'resumption',
+          pause: { reason: 'operator', operatorHold: true },
+        },
+      ],
+    })
+  })
+
   it('keeps dispatch disabled unless the fixture mode and positive limits are explicit', async () => {
     const { ctx } = await boot(await databasePath(), [candidate()])
     await ctx.admission.reconcile({ source: 'manual' })
