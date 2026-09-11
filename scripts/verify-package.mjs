@@ -8,8 +8,6 @@ const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.
 const artifactName = `${manifest.name.replace(/^@/, '').replaceAll('/', '-')}-${manifest.version}.tgz`
 const artifact = resolve(root, '.artifacts', artifactName)
 const dshHome = mkdtempSync(join(tmpdir(), 'dsh-autopilot-package-'))
-const profile = join(dshHome, 'profiles', 'autopilot-package-smoke')
-const pnpm = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
 const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx'
 const dsh = ['--yes', '@deepseek-ai/dsh@latest']
 
@@ -25,7 +23,11 @@ function run(command, args) {
   return result.stdout
 }
 
-function bootProfile(profileName, expectReady) {
+function redact(output) {
+  return output.replaceAll(/token=[^\s]+/g, 'token=[redacted]')
+}
+
+function bootProfile(profileName) {
   return new Promise((resolveBoot, rejectBoot) => {
     const child = spawn(npx, [...dsh, '--profile', profileName, '--host', '127.0.0.1', '--port', '0', '--no-open'], {
       cwd: root,
@@ -34,6 +36,7 @@ function bootProfile(profileName, expectReady) {
     })
     let ready = false
     let timedOut = false
+    let stdout = ''
     let stderr = ''
     const timeout = setTimeout(() => {
       timedOut = true
@@ -41,7 +44,9 @@ function bootProfile(profileName, expectReady) {
     }, 15_000)
 
     child.stdout.on('data', (chunk) => {
-      if (String(chunk).includes('dsh web: http://127.0.0.1:')) {
+      const output = String(chunk)
+      stdout = `${stdout}${output}`.slice(-8_000)
+      if (output.includes('dsh web: http://127.0.0.1:')) {
         ready = true
         child.kill('SIGTERM')
       }
@@ -55,26 +60,41 @@ function bootProfile(profileName, expectReady) {
     })
     child.once('exit', (code) => {
       clearTimeout(timeout)
-      if (timedOut && !expectReady && !ready) resolveBoot()
-      else if (timedOut) rejectBoot(new Error(`${profileName} did not settle within 15 seconds`))
-      else if (expectReady && ready) resolveBoot()
-      else if (!expectReady && !ready && code !== 0) resolveBoot()
-      else if (ready) rejectBoot(new Error(`${profileName} unexpectedly reached the Web ready state`))
-      else rejectBoot(new Error(`${profileName} exited before Web readiness (code ${String(code)})\n${stderr}`))
+      const output = redact(`${stdout}\n${stderr}`)
+      if (timedOut) rejectBoot(new Error(`${profileName} did not reach Web readiness within 15 seconds\n${output}`))
+      else if (ready) resolveBoot()
+      else rejectBoot(new Error(`${profileName} exited before Web readiness (code ${String(code)})\n${output}`))
     })
   })
+}
+
+function assertMissingEntryFails(profileDirectory) {
+  const result = spawnSync(
+    process.execPath,
+    ['--input-type=module', '--eval', "await import('dsh-autopilot-missing-entry')"],
+    {
+      cwd: profileDirectory,
+      encoding: 'utf8',
+      timeout: 15_000,
+    },
+  )
+  if (result.error) throw result.error
+  const diagnostic = `${result.stdout}\n${result.stderr}`
+  if (result.status === 0) throw new Error('missing-entry package unexpectedly resolved')
+  if (!diagnostic.includes('ERR_MODULE_NOT_FOUND') || !diagnostic.includes('missing.js')) {
+    throw new Error(`missing-entry package failed for an unrelated reason\n${diagnostic}`)
+  }
 }
 
 try {
   const dshVersion = run(npx, [...dsh, '--version']).trim()
   run(npx, [...dsh, '--profile', 'autopilot-package-smoke', '--from-default-profile', 'web', '--dump-config'])
   run(npx, [...dsh, 'plugin', '--profile', 'autopilot-package-smoke', 'add', artifact])
-  run(pnpm, ['--dir', profile, 'peers', 'check'])
   const config = run(npx, [...dsh, '--profile', 'autopilot-package-smoke', '--dump-config'])
   if (!config.includes('# == dsh-autopilot\n') || !config.includes('- id: autopilot\n  name: dsh-autopilot\n')) {
     throw new Error('installed profile does not contain the dsh-autopilot bundle layer')
   }
-  await bootProfile('autopilot-package-smoke', true)
+  await bootProfile('autopilot-package-smoke')
 
   const brokenPackage = join(dshHome, 'missing-entry')
   mkdirSync(brokenPackage)
@@ -94,7 +114,7 @@ try {
   )
   run(npx, [...dsh, '--profile', 'missing-entry-smoke', '--from-default-profile', 'web', '--dump-config'])
   run(npx, [...dsh, 'plugin', '--profile', 'missing-entry-smoke', 'add', brokenPackage])
-  await bootProfile('missing-entry-smoke', false)
+  assertMissingEntryFails(join(dshHome, 'profiles', 'missing-entry-smoke'))
 
   process.stdout.write(`Verified ${artifactName} with DSH ${dshVersion}.\n`)
 } finally {

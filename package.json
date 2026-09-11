@@ -55,11 +55,12 @@
       "patch": "./cordis.patch.yml"
     }
   },
-  "dependencies": {
+  "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2"
   },
   "devDependencies": {
     "@biomejs/biome": "latest",
+    "@deepseek-ai/cordis": "^4.0.2",
     "lefthook": "latest",
     "typescript": "latest",
     "vitest": "latest"
