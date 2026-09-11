@@ -1,6 +1,11 @@
-# dsh-autopilot
+![dsh-autopilot — Turn tickets into pull requests. Powered by DeepSeek Harness.](docs/assets/banner.png)
 
-Turn tickets into pull requests. Powered by DeepSeek Harness.
+[![License: MIT](https://img.shields.io/badge/license-MIT-78dba9?style=flat-square)](LICENSE)
+[![Status: specifications only](https://img.shields.io/badge/status-specifications_only-d8b46a?style=flat-square)](https://github.com/canhta/dsh-autopilot/issues)
+[![Built for DeepSeek Harness](https://img.shields.io/badge/built_for-DeepSeek_Harness-6fa8dc?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
+[![Contributions welcome](https://img.shields.io/badge/contributions-welcome-78dba9?style=flat-square)](docs/CONTRIBUTING.md)
+
+# dsh-autopilot
 
 dsh-autopilot is an open-source plugin being built for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH). Its goal: move approved tickets from your backlog to review-ready pull requests on your VPS, without supervising every agent turn.
 
