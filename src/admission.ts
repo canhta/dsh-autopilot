@@ -39,6 +39,13 @@ export type RunId = string & { readonly [runIdBrand]: true }
 
 export type AdmissionSource = 'manual' | 'scheduled' | 'startup' | 'webhook'
 
+export type SchedulerMode = 'enabled' | 'draining' | 'disabled'
+
+export interface SchedulerSnapshot {
+  readonly mode: SchedulerMode
+  readonly changedAt: string
+}
+
 export interface ReconcileRequest {
   source: AdmissionSource
   deliveryId?: string
@@ -154,6 +161,7 @@ export interface AdmissionSnapshot {
   runs: readonly AutopilotRun[]
   acceptedIngress: readonly string[]
   budget: AdmissionBudgetSnapshot
+  scheduler: SchedulerSnapshot
 }
 
 export interface ReconcileResult extends AdmissionSnapshot {
@@ -279,14 +287,20 @@ const terminalRunSchema = runBaseSchema.extend({
   completedAt: z.iso.datetime({ offset: true }),
 })
 const runSchema = z.discriminatedUnion('state', [queuedRunSchema, implementingRunSchema, terminalRunSchema])
+const schedulerModeSchema = z.enum(['enabled', 'draining', 'disabled'])
+const schedulerSchema = z.object({
+  mode: schedulerModeSchema,
+  changedAt: z.iso.datetime({ offset: true }),
+})
 
 const stateSchema = z
   .object({
-    schemaVersion: z.literal(2),
+    schemaVersion: z.literal(3),
     revision: z.number().int().nonnegative(),
     nextSequence: z.number().int().positive(),
     runs: z.array(runSchema).max(100),
     acceptedIngress: z.array(z.string().min(1).max(512).regex(ID_PATTERN)).max(MAX_INGRESS_RECEIPTS),
+    scheduler: schedulerSchema,
     budget: z.object({
       reservedTokens: z.number().int().nonnegative(),
       settledTokens: z.number().int().nonnegative(),
@@ -311,6 +325,9 @@ const stateSchema = z
     }
     if (value.runs.some((run) => createHash('sha256').update(run.brief.content).digest('hex') !== run.brief.digest)) {
       addIntegrityIssue('Brief digests must match retained content')
+    }
+    if (value.scheduler.mode === 'disabled' && value.runs.some((run) => run.state === 'implementing')) {
+      addIntegrityIssue('disabled scheduler cannot retain an implementing run')
     }
     if (sequences.length > 0 && value.nextSequence <= Math.max(...sequences)) {
       addIntegrityIssue('next queue sequence must follow every retained run')
@@ -353,7 +370,7 @@ type AdmissionState = z.infer<typeof stateSchema>
 
 const admissionDomainSpec = defineDomain({
   name: 'autopilot_admission',
-  version: 2,
+  version: 3,
   tables: {
     state: domainTable<typeof STATE_KEY, AdmissionState>(stateSchema),
   },
@@ -364,13 +381,16 @@ interface EligibleIssue {
   brief: AgentBriefSnapshot
 }
 
-const initialState: AdmissionState = {
-  schemaVersion: 2,
-  revision: 0,
-  nextSequence: 1,
-  runs: [],
-  acceptedIngress: [],
-  budget: { reservedTokens: 0, settledTokens: 0, usageUncertain: false },
+function initialState(): AdmissionState {
+  return {
+    schemaVersion: 3,
+    revision: 0,
+    nextSequence: 1,
+    runs: [],
+    acceptedIngress: [],
+    scheduler: { mode: 'enabled', changedAt: new Date().toISOString() },
+    budget: { reservedTokens: 0, settledTokens: 0, usageUncertain: false },
+  }
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -409,14 +429,14 @@ export class Admission extends Service {
     yield () => domain.close()
     this.state = domain.table('state')
     if (this.state.get(STATE_KEY) === undefined) {
-      await this.state.put(STATE_KEY, initialState)
+      await this.state.put(STATE_KEY, initialState())
     } else {
       await this.markInterruptedRunsForRecovery()
     }
   }
 
   /**
-   * Return a detached, priority-ordered view of the initialized durable queue.
+   * Return a detached, priority-ordered view of the initialized durable aggregate.
    * Throws if the service has not finished initialization; it performs no I/O and has no cancellation point.
    */
   snapshot(): AdmissionSnapshot {
@@ -425,17 +445,38 @@ export class Admission extends Service {
   }
 
   /**
+   * Atomically persist the scheduler admission/claim gate and return a detached aggregate snapshot. Draining permits
+   * implementing runs to settle; disabling rejects while any run is implementing. Invalid input or durable-write
+   * failure leaves the previous mode unchanged. The command accepts no caller cancellation signal.
+   */
+  async setSchedulerMode(mode: SchedulerMode): Promise<AdmissionSnapshot> {
+    const parsedMode = schedulerModeSchema.parse(mode)
+    const committed = await this.currentTable().update(STATE_KEY, (current) => {
+      if (parsedMode === 'disabled' && current.runs.some((run) => run.state === 'implementing')) {
+        throw new Error('scheduler cannot be disabled while an implementing run exists')
+      }
+      if (current.scheduler.mode === parsedMode) return current
+      const next = structuredClone(current)
+      next.scheduler = { mode: parsedMode, changedAt: new Date().toISOString() }
+      next.revision += 1
+      return stateSchema.parse(next)
+    })
+    return snapshotOf(committed)
+  }
+
+  /**
    * Atomically claim the highest-priority queued run and reserve its configured fixture allowance.
-   * Requires explicit fixture execution paths and positive caps. Returns undefined when the queue is empty. The claim
-   * stores immutable run/Session/worktree identities and its reservation together; disabled execution, uncertain usage,
-   * insufficient capacity, invalid configuration, or durable-write failure rejects without a partial claim. The method
-   * accepts no cancellation signal and does not start external work.
+   * Returns undefined when the scheduler is not enabled or the queue is empty. Otherwise, explicit fixture execution
+   * paths and positive caps are required. The claim stores immutable run/Session/worktree identities and its reservation
+   * together; disabled execution, uncertain usage, insufficient capacity, invalid configuration, or durable-write
+   * failure rejects without a partial claim. The method accepts no cancellation signal and does not start external work.
    */
   async claimNext(): Promise<ImplementingRun | undefined> {
     const settings = this.currentSettings()
-    validateFixtureExecutionSettings(settings)
     let claimed: ImplementingRun | undefined
     await this.currentTable().update(STATE_KEY, (current) => {
+      if (current.scheduler.mode !== 'enabled') return current
+      validateFixtureExecutionSettings(settings)
       if (current.budget.usageUncertain) {
         throw new Error('deployment token usage is uncertain; reconcile it before dispatch')
       }
@@ -571,8 +612,10 @@ export class Admission extends Service {
 
   /**
    * Read the selected tracker provider and atomically admit every currently eligible issue.
-   * Provider, validation, capacity, or durable-write failures reject without advancing admission state. Provider
-   * withdrawal cancels its owned reads; callers cannot independently cancel this operation in interface version 1.
+   * When the scheduler is not enabled, returns an unchanged detached snapshot without reading the provider or retaining
+   * an ingress receipt. Provider, validation, capacity, or durable-write failures reject without advancing admission
+   * state. Provider withdrawal cancels its owned reads; callers cannot independently cancel this operation in interface
+   * version 1.
    */
   async reconcile(request: ReconcileRequest): Promise<ReconcileResult> {
     validateRequest(request)
@@ -582,6 +625,9 @@ export class Admission extends Service {
       throw new TypeError(`delivery id must be qualified by tracker provider "${providerId}"`)
     }
     const beforeRead = this.currentState()
+    if (beforeRead.scheduler.mode !== 'enabled') {
+      return { ...snapshotOf(beforeRead), decisions: [] }
+    }
     if (request.deliveryId !== undefined && beforeRead.acceptedIngress.includes(request.deliveryId)) {
       return { ...snapshotOf(beforeRead), decisions: [] }
     }
@@ -601,6 +647,10 @@ export class Admission extends Service {
       const state = this.currentTable()
       let decisions: AdmissionDecision[] = []
       const committed = await state.update(STATE_KEY, (current) => {
+        if (current.scheduler.mode !== 'enabled') {
+          decisions = []
+          return current
+        }
         if (request.deliveryId !== undefined && current.acceptedIngress.includes(request.deliveryId)) {
           decisions = []
           return current
@@ -826,6 +876,7 @@ function snapshotOf(state: AdmissionState): AdmissionSnapshot {
         left.displayKey.localeCompare(right.displayKey),
     ),
     acceptedIngress: [...state.acceptedIngress],
+    scheduler: structuredClone(state.scheduler),
     budget: structuredClone(state.budget),
   }
 }

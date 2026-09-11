@@ -234,6 +234,26 @@ async function bootFixture(root: string, adapter: ControlledAdapter): Promise<Co
 }
 
 describe('durable fixture dispatch', () => {
+  it('does not claim or start a queued run while the scheduler is draining', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-draining-'))
+    temporaryDirectories.push(root)
+    const adapter = new ControlledAdapter()
+    const ctx = await bootFixture(root, adapter)
+    await ctx.admission.setSchedulerMode('draining')
+    const before = ctx.admission.snapshot()
+
+    await expect(ctx.dispatch.dispatchNext()).resolves.toBeUndefined()
+
+    expect(ctx.admission.snapshot()).toEqual(before)
+    expect(ctx.admission.snapshot()).toMatchObject({
+      scheduler: { mode: 'draining' },
+      runs: [{ state: 'queued' }],
+      budget: { reservedTokens: 0, settledTokens: 0, usageUncertain: false },
+    })
+    expect(adapter.requests).toEqual([])
+    expect(await readdir(join(root, 'worktrees'))).toEqual([])
+  })
+
   it('runs one native Agent in a managed worktree and settles reported usage', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-'))
     temporaryDirectories.push(root)

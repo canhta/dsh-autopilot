@@ -89,8 +89,14 @@ function candidate(overrides: Partial<TrackerIssueSnapshot> = {}): TrackerIssueS
   }
 }
 
-function fixtureProvider(issues: readonly TrackerIssueSnapshot[]): TrackerProvider {
-  return createFixtureTrackerProvider({ issues })
+function fixtureProvider(issues: readonly TrackerIssueSnapshot[], onRead?: () => void): TrackerProvider {
+  return createFixtureTrackerProvider({
+    issues,
+    readCandidates: () => {
+      onRead?.()
+      return Promise.resolve({ issues })
+    },
+  })
 }
 
 async function databasePath(): Promise<string> {
@@ -130,6 +136,7 @@ interface StoredRun {
 }
 
 interface StoredAdmissionState {
+  schemaVersion: number
   nextSequence: number
   runs: StoredRun[]
   acceptedIngress: string[]
@@ -158,6 +165,7 @@ async function boot(
   issues: readonly TrackerIssueSnapshot[],
   maxQueued = 20,
   admissionSettings: Record<string, unknown> = {},
+  onRead?: () => void,
 ) {
   const ctx = trackContext(
     await mountHostServices(path, {
@@ -169,12 +177,105 @@ async function boot(
     }),
   )
   await ctx.plugin(Tracker)
-  const disposeProvider = ctx.tracker.register(fixtureProvider(issues))
+  const disposeProvider = ctx.tracker.register(fixtureProvider(issues, onRead))
   await ctx.plugin(Admission)
   return { ctx, disposeProvider }
 }
 
 describe('admission service seam', () => {
+  it('persists scheduler stops across restarts without reading or changing admission state', async () => {
+    const path = await databasePath()
+    const executionSettings = fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees')
+    let providerReads = 0
+    const countRead = () => {
+      providerReads += 1
+    }
+    const first = await boot(path, [candidate()], 20, executionSettings, countRead)
+    await first.ctx.admission.reconcile({ source: 'manual' })
+    expect(providerReads).toBe(1)
+
+    const draining = await first.ctx.admission.setSchedulerMode('draining')
+    expect(draining).toMatchObject({
+      scheduler: { mode: 'draining' },
+      runs: [{ state: 'queued' }],
+    })
+    expect(Date.parse(draining.scheduler.changedAt)).not.toBeNaN()
+    const drainingChangedAt = draining.scheduler.changedAt
+    ;(draining.scheduler as { mode: string }).mode = 'enabled'
+    const exposedRun = draining.runs[0]
+    if (exposedRun === undefined) throw new Error('expected a queued run')
+    ;(exposedRun as { summary: string }).summary = 'caller mutation'
+    expect(first.ctx.admission.snapshot()).toMatchObject({
+      scheduler: { mode: 'draining', changedAt: drainingChangedAt },
+      runs: [{ summary: 'Implement durable tracker admission', state: 'queued' }],
+    })
+
+    const beforeDrainingReconcile = first.ctx.admission.snapshot()
+    const drainingReconcile = await first.ctx.admission.reconcile({
+      source: 'webhook',
+      deliveryId: 'fixture:draining-delivery',
+    })
+    expect(drainingReconcile).toEqual({ ...beforeDrainingReconcile, decisions: [] })
+    expect(providerReads).toBe(1)
+    expect(drainingReconcile.acceptedIngress).not.toContain('fixture:draining-delivery')
+    await expect(first.ctx.admission.claimNext()).resolves.toBeUndefined()
+    await disposeTrackedContext(first.ctx)
+
+    const second = await boot(path, [candidate()], 20, executionSettings, countRead)
+    expect(second.ctx.admission.snapshot().scheduler).toEqual({
+      mode: 'draining',
+      changedAt: drainingChangedAt,
+    })
+    const disabled = await second.ctx.admission.setSchedulerMode('disabled')
+    expect(disabled.scheduler).toMatchObject({
+      mode: 'disabled',
+    })
+    expect(Date.parse(disabled.scheduler.changedAt)).not.toBeNaN()
+    const disabledChangedAt = disabled.scheduler.changedAt
+    await disposeTrackedContext(second.ctx)
+
+    const third = await boot(path, [candidate()], 20, executionSettings, countRead)
+    const beforeDisabledReconcile = third.ctx.admission.snapshot()
+    expect(beforeDisabledReconcile.scheduler).toEqual({ mode: 'disabled', changedAt: disabledChangedAt })
+    const disabledReconcile = await third.ctx.admission.reconcile({ source: 'scheduled' })
+    expect(disabledReconcile).toEqual({ ...beforeDisabledReconcile, decisions: [] })
+    expect(providerReads).toBe(1)
+    await expect(third.ctx.admission.claimNext()).resolves.toBeUndefined()
+  })
+
+  it('rejects disable atomically while implementing but permits draining settlement', async () => {
+    const { ctx } = await boot(
+      await databasePath(),
+      [candidate()],
+      20,
+      fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees'),
+    )
+    await ctx.admission.reconcile({ source: 'manual' })
+    const claimed = await ctx.admission.claimNext()
+    if (claimed === undefined) throw new Error('expected an implementing run')
+    const beforeDisable = ctx.admission.snapshot()
+
+    await expect(ctx.admission.setSchedulerMode('disabled')).rejects.toThrow(/implementing run/i)
+    expect(ctx.admission.snapshot()).toEqual(beforeDisable)
+
+    await expect(ctx.admission.setSchedulerMode('draining')).resolves.toMatchObject({
+      scheduler: { mode: 'draining' },
+      runs: [{ state: 'implementing' }],
+    })
+    const settled = await ctx.admission.settle(
+      claimed.runId,
+      { kind: 'failed', summary: 'Fixture drain settlement.', evidence: ['fixture'] },
+      { kind: 'known', tokens: 10 },
+    )
+    expect(settled).toMatchObject({ state: 'failed', budget: { reservedTokens: 0, settledTokens: 10 } })
+    expect(ctx.admission.snapshot()).toMatchObject({
+      scheduler: { mode: 'draining' },
+      runs: [{ state: 'failed' }],
+      budget: { reservedTokens: 0, settledTokens: 10, usageUncertain: false },
+    })
+    await expect(ctx.admission.claimNext()).resolves.toBeUndefined()
+  })
+
   it('keeps dispatch disabled unless the fixture mode and positive limits are explicit', async () => {
     const { ctx } = await boot(await databasePath(), [candidate()])
     await ctx.admission.reconcile({ source: 'manual' })
@@ -453,11 +554,13 @@ describe('admission service seam', () => {
       comments: [briefComment({ body: 'x'.repeat(17 * 1024 * 1024) })],
     })
     const { ctx } = await boot(await databasePath(), [oversized])
+    const before = ctx.admission.snapshot()
 
     await expect(ctx.admission.reconcile({ source: 'manual' })).rejects.toMatchObject({
       code: 'invalid-response',
     })
-    expect(ctx.admission.snapshot()).toEqual({
+    expect(ctx.admission.snapshot()).toEqual(before)
+    expect(ctx.admission.snapshot()).toMatchObject({
       revision: 0,
       runs: [],
       acceptedIngress: [],
@@ -474,6 +577,26 @@ describe('admission service seam', () => {
       database
         .prepare('UPDATE u_autopilot_admission_state SET value = ? WHERE key = ?')
         .run(JSON.stringify({ schemaVersion: 1, runs: [{ state: 'queued' }] }), 'primary')
+    })
+
+    const ctx = trackContext(
+      await mountHostServices(path, {
+        'dsh-autopilot': { trackerProvider: 'fixture', maxQueued: 20 },
+      }),
+    )
+    await ctx.plugin(Tracker)
+
+    await expect(ctx.plugin(Admission)).rejects.toThrow(/stored record.*does not match its schema/i)
+    await disposeTrackedContext(ctx)
+  })
+
+  it('fails closed when a version-2 durable admission record is reopened', async () => {
+    const path = await databasePath()
+    const first = await boot(path, [candidate()])
+    await first.ctx.admission.reconcile({ source: 'startup' })
+    await disposeTrackedContext(first.ctx)
+    rewriteStoredState(path, (state) => {
+      state.schemaVersion = 2
     })
 
     const ctx = trackContext(
@@ -604,12 +727,14 @@ describe('admission service seam', () => {
   it('does not commit a run or ingress receipt when durable update fails', async () => {
     const path = await databasePath()
     const { ctx } = await boot(path, [candidate()])
+    const before = ctx.admission.snapshot()
     rejectAdmissionUpdates(path)
 
     await expect(
       ctx.admission.reconcile({ source: 'webhook', deliveryId: 'fixture:delivery-failure' }),
     ).rejects.toThrow()
-    expect(ctx.admission.snapshot()).toEqual({
+    expect(ctx.admission.snapshot()).toEqual(before)
+    expect(ctx.admission.snapshot()).toMatchObject({
       revision: 0,
       runs: [],
       acceptedIngress: [],

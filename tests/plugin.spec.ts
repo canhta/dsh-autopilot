@@ -18,6 +18,7 @@ describe('DSH plugin entry', () => {
       runs: [],
       acceptedIngress: [],
       budget: { reservedTokens: 0, settledTokens: 0, usageUncertain: false },
+      scheduler: { mode: 'enabled', changedAt: expect.any(String) as unknown },
     })
     await expect(fiber.dispose()).resolves.toBeUndefined()
     expect(ctx.get('tracker')).toBeUndefined()
@@ -31,6 +32,7 @@ describe('DSH plugin entry', () => {
       runs: [],
       acceptedIngress: [],
       budget: { reservedTokens: 0, settledTokens: 0, usageUncertain: false },
+      scheduler: { mode: 'enabled', changedAt: expect.any(String) as unknown },
     })
     await expect(remounted.dispose()).resolves.toBeUndefined()
     await disposeContext(ctx)
