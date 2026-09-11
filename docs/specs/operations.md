@@ -13,7 +13,7 @@ Run snapshots preserve execution scope and integration interpretation, not permi
 | Configuration group | Required choices |
 | --- | --- |
 | Tracker | Provider binding, project scope, credential reference, ready/state label mapping, Brief selection, completed/review status mapping |
-| Target | Code-host provider binding, explicit repository/workspace routing, base branch; routing policy must be explicit |
+| Target | Code-host provider binding, one repository and base branch for the initial Jira Cloud + GitHub deployment; routing remains configuration-owned |
 | Scheduler | Enabled, cadence, timezone, allowed windows, running/queue limits |
 | Execution | Supported DSH version, preset, model route where needed, timeouts and delegation policy |
 | Budget | Enforcement mode, scope limits, warning threshold, accounting currency/units, pricing source/version, unknown-usage policy |
