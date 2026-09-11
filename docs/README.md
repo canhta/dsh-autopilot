@@ -29,6 +29,11 @@ Specs define required behavior and acceptance rules; a rule's existence does not
 | Configuration, repair, scheduling, budget, persistence and cleanup | [Operations](specs/operations.md) |
 | UI navigation, visual design and journeys | [Web UX](specs/web-ui.md) |
 | UI component data, commands and states | [Components](specs/ui-components.md) |
+| Selecting DSH capabilities before implementation | [Capability map](research/dsh.md#capability-reading-map) |
+| Public Web components, Settings placement and Client imports | [Web reuse](research/dsh-web.md) |
+| API, streaming, MCP, SDK and process integration | [Connectivity reuse](research/dsh-connectivity.md) |
+| Presets, skills, execution, continuation and delegation | [Execution reuse](research/dsh-execution.md) |
+| Settings, credentials, storage, timing, ingress and Git | [Host platform reuse](research/dsh-platform.md) |
 | Linear-specific mappings and limitations | [Linear evidence](research/linear.md) |
 | Bitbucket-specific mappings and limitations | [Bitbucket evidence](research/bitbucket.md) |
 

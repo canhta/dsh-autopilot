@@ -6,7 +6,7 @@ This page owns replaceable integration interfaces. [Scope](scope.md) owns produc
 
 Use ordinary Cordis plugins with Service Definition / Provider / Consumer roles. Required implementations are Jira and Linear tracker providers, GitHub and Bitbucket code-host providers, and webhook/ntfy notification providers. Tracker comments use the selected tracker provider; do not implement a second tracker client inside notifications.
 
-The core scheduler consumes provider services, never vendor clients. Host queries expose normalized run data to Web. No `if provider === 'jira'` branches in admission, execution, worktree cleanup or the shared UI. Provider implementations own vendor SDKs, wire validation, pagination, authentication, mapping, retry classification and external receipts.
+The core scheduler consumes provider services, never vendor clients. Host queries expose normalized run data to Web. No `if provider === 'jira'` branches in admission, execution, worktree cleanup or the shared UI. Providers own integration semantics: mapping vendor data, pagination, access checks, retry classification and external receipts. Delegate transport, credential resolution and protocol mechanics to suitable DSH capabilities or maintained clients; ownership does not require reimplementing them.
 
 One deployment selects one tracker binding/project and one code-host binding; any supported tracker can pair with any supported code host. Multiple configured notification destinations are allowed. This is composition, not a cross-project control plane.
 
@@ -22,7 +22,7 @@ Publish the Service Definitions and registration types for external plugins. Kee
 
 **Proposed registration design:** supply a stable provider id, interface version, display metadata, validated configuration schema, capability declaration and a binding factory returning a disposer. Reject duplicate ids and incompatible versions. Register through an effect-owned lifetime; required service injection uses Cordis activation rules. Schemas are Host authoritative; optional Client contributions may improve selectors but cannot change validation.
 
-Expose small operation groups, not a universal HTTP request escape hatch. An installed provider can use REST, GraphQL, a maintained SDK or a constrained MCP integration internally only if it satisfies the same evidence/recovery obligations. Credential values, client objects and arbitrary vendor JSON do not become core run fields.
+Expose small operation groups, not a universal HTTP request escape hatch. Inspect existing DSH MCP and installed connectors before choosing provider transport; [connectivity evidence](../research/dsh-connectivity.md) distinguishes model tools from Host integration APIs. Reuse a suitable connector behind the normalized provider service when it satisfies the same evidence/recovery obligations. Otherwise implement only missing operations using REST, GraphQL or a maintained SDK. Model-selected tool calls cannot replace deterministic admission, readiness authorization or publication reconciliation. Credential values, client objects and arbitrary vendor JSON do not become core run fields.
 
 ## Normalized facts
 

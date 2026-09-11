@@ -2,6 +2,12 @@
 
 This page owns the proposed DSH plugin integration design. Upstream interface names require verification against the selected DSH version; source evidence is in [DSH research](../research/dsh.md). Required provider extensibility is owned by [provider architecture](providers.md).
 
+## Reuse before implementation
+
+For each capability being implemented, follow the [DSH capability reading map](../research/dsh.md#capability-reading-map). Identify the public service/export, compose its provider and consumers, and verify the required behavior through the installed artifact. Autopilot owns ticket-to-PR policy and domain records, not the infrastructure used to execute that policy. A component or service name in these specs denotes a responsibility, not a mandate to write a new framework.
+
+Before introducing replacement infrastructure, record the exact missing behavior and source evidence on the implementation issue. First try supported configuration/composition or a narrow consumer adapter. If an upstream extension is needed, track it as a dependency; use one selected implementation, not parallel native/custom paths. Loading every DSH capability is not a requirement: select only what this deployment needs.
+
 ## Cordis lifecycle
 
 - Export a plugin `apply(ctx)` and a runtime `Config` schema. Use service injection for activation dependencies; YAML row order does not determine plugin startup order.
@@ -27,13 +33,13 @@ Git-source installs require self-contained built entry points, typically a `prep
 
 ## Web and Host interface
 
-Register a root-scoped `main` panel keyed by the same id as its `sidebar.panellist` entry. Contribute Settings through `settings.section` and an optional Session shortcut through `conversation.session.header.actions`. Use `ctx.slots.inject` to wait for the slot declaration, not merely for the slots service. Effects must remove and restore contributions across unload/reload.
+Register a root-scoped `main` panel keyed by the same id as its `sidebar.panellist` entry. Contribute one Settings editor through `settings.section` or the existing Plugins namespace-card slot; reuse the existing shell and public components from [Web research](../research/dsh-web.md). An optional Session shortcut uses `conversation.session.header.actions`. Use `ctx.slots.inject` to wait for the slot declaration, not merely for the slots service. Effects must remove and restore contributions across unload/reload.
 
 Keep Host/Client type and build programs separated. A typed Remote requires generated Host descriptors, Client contribution output, and explicit Client mounting. Do not copy an upstream cookbook step that edits the monorepo's central Remote assembly into this external repository. A decorator alone does not expose the plugin's interface remotely.
 
-At this baseline typed Remotes are unary. Use bounded snapshot polling first or a separately verified event stream with full snapshot recovery. Do not assume an async iterable returned from a Remote method creates a supported streaming protocol.
+DSH supports typed unary and explicitly declared stream Remotes. Reuse Gateway transport, cancellation and reconnect handling; use its snapshot/journal helpers where the domain's event protocol fits. Autopilot supplies authorized queries/commands, revisions and domain-specific recovery semantics, not another RPC/WebSocket stack. An iterable alone does not declare a Remote stream. Select and test one update mechanism; bounded polling is acceptable when sufficient, not a required substitute for existing streaming. See [connectivity evidence](../research/dsh-connectivity.md).
 
-Use the Host Settings/credential facilities when the selected access mode supports them. `CredentialRef` is an environment-style reference resolved per operation; metadata describes configured/source/writable status without revealing values. Credential rotation applies to future requests; secrets are not durable run inputs. Authentication grant records use the separate upstream record mechanism when needed.
+Use the Host Settings/credential facilities when the selected access mode supports them; [platform evidence](../research/dsh-platform.md) owns their APIs and limitations. Register Autopilot's schema and policy validation with Settings rather than implementing another configuration store. Keep credentials in the existing credential service and resolve them per operation; secrets are not durable run inputs.
 
 
 ## Installation and access acceptance

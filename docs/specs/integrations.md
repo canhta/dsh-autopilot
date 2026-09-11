@@ -6,6 +6,8 @@ Read only the configured project's candidates and their required context: stable
 
 Receive authenticated tracker webhooks and run scheduled/startup reconciliation. Verify authenticity using the supported mechanism for the configured webhook type. Persist enough ingress information before acknowledging acceptance; fetch current tracker state instead of trusting an old event snapshot. Filter project/label locally as needed when webhook subscription filters cannot express the rule.
 
+Use existing DSH Host routing and suitable ingress adapters; [platform research](../research/dsh-platform.md#timing-ingress-and-git) identifies what they do and do not guarantee. Provider-specific verification and Autopilot admission durability remain required; do not create an independent HTTP server merely to receive events.
+
 Treat provider-qualified tracker delivery IDs as ingress retry identifiers, not complete run uniqueness keys. Use the shared [admission policy](lifecycle.md) for all sources. Paginate searches/comments and handle rate limiting. A tracker update timestamp alone cannot prove a human readiness transition. Normalize vendor-specific facts through the selected provider; never call Jira or Linear SDKs from core admission.
 
 ## Agent Brief convention

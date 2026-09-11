@@ -4,9 +4,9 @@
 
 Run one orchestrator in a supported DSH profile on one VPS. Persist schedule enabled state and operator changes on the Host. Admission has an explicit timezone, reconciliation cadence and optional allowed time windows. Window closure prevents new dispatch; the scheduler disable command has the pause semantics in [lifecycle](lifecycle.md). Show the next reconciliation and next allowed dispatch separately.
 
-Use startup reconciliation of current tracker state rather than replaying every missed polling tick as fresh work. Manual reconcile respects the same gates. Configure maximum running and queued workflows; these are separate limits.
+Use startup reconciliation of current tracker state rather than replaying every missed polling tick as fresh work. Manual reconcile respects the same gates. Configure maximum running and queued workflows; these are separate limits. Reuse timing facilities only where their scope fits global admission; [platform research](../research/dsh-platform.md#timing-ingress-and-git) distinguishes DSH reminders from this policy.
 
-Own one validated configuration with a persisted revision and immutable per-run snapshots. Web edits and file-based deployment settings must have explicit precedence and show effective values. Operator edits affect future admission immediately; reductions to capacity do not kill existing work, while scheduler disable requests pause. Budget reductions stop additional spending authorization under the budget policy below. Record changes affecting active runs.
+Register one authoritative Autopilot configuration with DSH Settings and use its validation, precedence and revision-checked writes; preserve immutable per-run snapshots in run storage. Web edits and file-based deployment settings must show effective values. Operator edits affect future admission immediately; reductions to capacity do not kill existing work, while scheduler disable requests pause. Budget reductions stop additional spending authorization under the budget policy below. Record changes affecting active runs.
 
 Run snapshots preserve execution scope and integration interpretation, not permission to ignore current scheduler/budget restrictions. Reject ordinary changes to labels, Brief selection, dependency/review-state mappings or priority mappings while unfinished runs or unresolved intents use those mappings; explain the dependents in Settings. The delivery-repair operation below is the narrow exception. Credential rotation and safe operational limit edits remain available. Future-only execution settings do not silently replace the retained Session's preset/model configuration.
 
@@ -44,11 +44,13 @@ When budget becomes unavailable, request an operational pause, retain continuati
 
 Use provider-reported token usage and a recorded pricing version for estimates. Preserve input/cache/output categories supported by the provider. Credential, provider and model changes cannot silently mix currencies or invent conversions.
 
-The source-confirmed request hook and token categories are recorded in [DSH research](../research/dsh.md). Cover conversation requests, retries, compaction, title generation and enabled children; map each to a run before authorization. Unowned model requests need an explicit deployment policy. Use those category definitions without double-counting; an estimate is not proof of a monetary upper bound.
+The existing DSH request hook, usage records and token categories are recorded in [execution research](../research/dsh-execution.md). Reuse them for metering and authorization integration instead of replacing the LLM client. Cover conversation requests, retries, compaction, title generation and enabled children; map each to a run before authorization. Unowned model requests need an explicit deployment policy. Use those category definitions without double-counting; an estimate is not proof of a monetary upper bound.
 
 ## Durable state
 
-**Proposed implementation:** one SQLite database for run metadata, admission/queue state, budget entries, operation intents, notification outbox, worktree ownership and audit. DSH continues owning its Session persistence; Git continues owning repository state. A single-process store lock is sufficient for v1; no distributed coordinator.
+Autopilot owns run metadata, admission/queue state, budget entries, operation intents, notification outbox, worktree ownership and audit. DSH continues owning Session persistence and configuration; Git owns repository state. Reuse DSH storage domains and a supported backend where their atomicity meets these requirements; [platform evidence](../research/dsh-platform.md#durable-storage-fit) records the single-record limitation. Do not infer multi-record transactions merely because the backend uses SQLite.
+
+**Proposed implementation selection:** prove an atomic record model for state-plus-intent and concurrent budget reservation through the existing domain facility first. Evaluate bounded record size, query cost, recovery and retention, not just a happy-path write. If a requirement cannot fit, document the failing case before choosing a narrow transactional extension or Autopilot-owned store. Select one authoritative store for each datum; do not mirror writes into native and custom implementations. Enforce a single Host owner of the runtime store; no distributed coordinator.
 
 Persist enough information to reconcile external actions after a crash: issue identity/readiness generation, Brief snapshot, run/attempt ids, state/revision, queue ordering facts, configuration revision, DSH Session reference, worktree/base/head, pause/checkpoint, publication intent/receipt, usage/reservations, delivery records and operator actions. Avoid mirroring complete DSH logs into another database.
 
@@ -56,7 +58,7 @@ Version durable records and schema. Never advance runtime state on a failed dura
 
 ## Worktrees and cleanup
 
-Allocate and register a worktree per run beneath the configured managed root. Persist ownership before dispatch. Preserve local changes across pause/restart, and distinguish managed, missing and orphaned worktrees. An orphan requires reconciliation before it is treated as disposable. Git paths and branch names must be derived from validated inputs, never executed as ticket-supplied shell text.
+Allocate and register a worktree per run beneath the configured managed root. Use native Git operations through the supported DSH subprocess facility; reuse Workspace/Session association when the selected composition needs it, not as a replacement for Git ownership checks. Persist run ownership before dispatch. Preserve local changes across pause/restart, and distinguish managed, missing and orphaned worktrees. An orphan requires reconciliation before it is treated as disposable. Git paths and branch names must be derived from validated inputs, never executed as ticket-supplied shell text.
 
 Provide cleanup preview showing the exact managed worktree, associated run, branch, dirty/untracked files, unpushed commits, current PR disposition, removable disk usage and retained data. Refuse ordinary cleanup for active/queued/paused/blocked work, an open or unknown PR, dirty/untracked data, or commits not safely accounted for remotely. Do not turn a default cleanup button into force deletion.
 

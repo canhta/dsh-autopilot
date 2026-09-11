@@ -1,6 +1,6 @@
 # UI modules and components
 
-This page owns Client decomposition and component behavior. [Web UI](web-ui.md) owns navigation, visual rules and interaction acceptance. Names below are proposed Autopilot components, not existing DSH exports. Reuse upstream primitives after verifying their current exports; do not add a second component library by default.
+This page owns Client decomposition, data/command behavior and functional acceptance. [Web UI](web-ui.md) owns navigation, visual rules, journeys and visual acceptance. Names below are Autopilot responsibilities, not instructions to create new components when DSH already supplies them; see [DSH Web reuse evidence](../research/dsh-web.md).
 
 ## Module ownership
 
@@ -14,7 +14,7 @@ This page owns Client decomposition and component behavior. [Web UI](web-ui.md) 
 | Worktrees | Inspect retained Git work and safe removal eligibility | Managed worktrees plus explicit refreshed Git/PR inspection | Request preview, confirm valid cleanup |
 | Settings contribution | Configure providers and operational policy | Effective values, revision, provider schemas/metadata/lookups | Validate/save configuration, explicit connection/test delivery actions |
 
-Modules call the same typed Host query/command client. Views must not own pollers that dispatch work, duplicate provider clients, or mutate run state locally. Query active views and selected details with bounded polling until a supported stream is proven. Disposal cancels requests/subscriptions; reconnect invalidates stale state. Do not fetch every full Session or run transcript to render a table.
+Host state is authoritative. Modules use the existing DSH Remote client with Autopilot's generated query/command contributions; the browser persists only view preferences. Use the supported snapshot/stream facilities described in [plugin engineering](plugin.md#web-and-host-interface) for active views and selected details. Disposal cancels requests/subscriptions. Views neither dispatch workflows nor duplicate provider clients, and do not load full Session transcripts for a table. Query and command transitions are owned by the shared presentation components below.
 
 ## Shell and list components
 
@@ -29,7 +29,7 @@ Modules call the same typed Host query/command client. Views must not own poller
 
 Run detail uses composition: `BlockerCallout` renders numbered questions and the exact tracker action; `VerificationSummary` renders checks/results/skips and verified Git identity; `RunTimeline` renders timestamped normalized events, grouping repeated retries; `ResourceLinks` links to tracker, DSH Session, PR and worktree details. None derives success from prose or infers a next action from status color.
 
-The panel footer uses the operator-command policy below; the Host rechecks permissions/state on every command. A human blocker's continuation action goes to the tracker, never an Autopilot approval button; cancelling the run remains a separate terminal action. Preserve scroll/selection if an update arrives; announce significant state changes without moving focus.
+The panel footer uses the operator-command policy below. Preserve scroll/selection if an update arrives; announce significant state changes without moving focus.
 
 ## Operator-command policy
 
@@ -48,7 +48,7 @@ The panel footer uses the operator-command policy below; the Host rechecks permi
 
 A blocked run shows `Waiting for a human in {trackerName}`, its questions and `Open in {trackerName}`. Human unblock authorization stays on tracker. Display the reason for unavailable actions; do not silently ignore them. Destructive cleanup requires confirmation of the preview, while ordinary reads do not.
 
-
+The Host rechecks current state for every command. Audit mutations with operator identity when available, timestamp, request id, target and resulting revision.
 Mapping repair is available only for failed tracker projections under [delivery repair](operations.md#repairing-a-broken-delivery-mapping). Show the old/new mapping and affected intent, validate and confirm; never expose it as an unblock shortcut.
 
 ## Operational components
@@ -57,27 +57,36 @@ Mapping repair is available only for failed tracker projections under [delivery 
 | --- | --- |
 | `ScheduleSummary` | Text/table of effective windows and timezone, next reconciliation versus next admissible dispatch, disabled/draining/window-closed explanations, recent reconciliation outcomes. No cron-expression-only presentation or calendar editor. Edit opens the owning Settings section. |
 | `BudgetLedger` | Per configured scope: cap, settled, reserved, remaining, reset time and enforcement mode. Unknown amounts remain unknown. A restrained labelled meter is permitted only with a known denominator; provider balance is separate. Show affected paused runs and coverage explanation; no forecast graph without data. |
-| `DeliveryTable` | Event, linked run/ticket, destination label, delivery state, attempts/next retry and sanitized error. Inspect exposes redacted payload/receipt. Retry has pending/result feedback and stable intent; it does not trigger a new execution. |
+| `DeliveryTable` | Event, linked run/ticket, destination label, delivery state, attempts/next retry and sanitized error. Inspect exposes redacted payload/receipt; retry uses the operator-command policy. |
 | `WorktreeTable` | Ticket/run, branch, active/retained/missing/orphaned state, last inspection age, dirty/untracked/unpushed indicators, PR disposition, disk usage and cleanup eligibility. Unknown inspection values display explicitly. Select opens an inspector; refreshing inspection is an explicit read. |
 | `WorktreeInspector` | Exact managed path and run association, Git findings, PR link/disposition, retention basis and blocking reasons. Preview cleanup is available only for an inspectable managed target; no recursive filesystem-delete button. |
 | `CleanupDialog` | Host-issued target/revision, removable path/size, branch/data retained, checked Git/PR conditions and expiry/staleness. Cancel is the safe default; confirm names the worktree. Pending disables repeat submit. Stale preview requires re-inspection, not confirmation of old data. |
 | `ProviderBindingFields` | Provider selector from installed registrations; provider-specific project/team/workspace/repository selectors and validated mappings. Keep stable ids internally and friendly names visibly. Show missing capabilities, access, compatibility and binding-switch restrictions before save. |
-| `SettingsForm` | Sections: Providers & project; Schedule & capacity; Execution; Budget; Notifications; Retention & storage. One draft/revision with dirty state, inline field errors, save result and stale-edit recovery. Loading lookups cannot erase stored values. No silent autosave for operational policy. |
+| `SettingsForm` | Sections: Providers & project; Schedule & capacity; Execution; Budget; Notifications; Retention & storage, using [Host configuration](operations.md#scheduling-and-configuration). Show defaults/effective values. One draft/revision with dirty state, validation, inline errors and save result; a stale edit returns conflict with a reload path, not an overwrite. Loading lookups cannot erase stored values. No silent autosave for operational policy. |
 
-Notifications use a destination list with add/edit/test controls inside Settings; a test shows the chosen destination and disclosure before sending. Credentials use supported Host reference/status controls. Never hydrate existing secret values into the Client; show only configured/source/writable/error metadata and allowed replacement actions.
+Notifications use a destination list with add/edit/test controls inside Settings. An explicit operator test previews destination, redacted payload and disclosure before sending, and labels the delivery as a test. Credentials use supported Host reference/status controls. Never hydrate existing secret values into the Client; show only configured/missing/source/writable/error metadata and allowed replacement actions.
 
 ## Shared primitives and state
 
-Reuse verified DSH buttons, fields, tabs, table primitives, dialogs, typography, icons and semantic theme tokens. Autopilot-specific shared components are limited to repeated domain presentation: `RunStateLabel`, `ProviderResourceLink`, `UsageValue`, `CommandFeedback` and `QueryState`. A domain label carries text/icon/color; unknown remains distinct from zero/success.
+Compose the public DSH primitives, Settings services/slots, theme and localization listed in the [reuse map](../research/dsh-web.md#reuse-map). The baseline exports no generic table, accessible tablist, schema form or credential editor; implement only the required domain composition over shared atoms and semantic HTML. Reusing a dialog still requires verifying focus management. Autopilot-specific shared components are limited to repeated domain presentation: `RunStateLabel`, `ProviderResourceLink`, `UsageValue`, `CommandFeedback` and `QueryState`. A domain label carries text/icon/color; unknown remains distinct from zero/success.
 
 `QueryState` distinguishes first load, empty domain, empty filtered result, denied/unavailable, stale cached data and retryable error. Preserve last known data on disconnection and visibly mark its age; disable unsafe mutations. Do not replace a useful table with a full-screen spinner during each refresh.
 
+On reconnect, fetch a current Host snapshot before enabling actions from cached data. `UsageValue` distinguishes provider-reported values, estimates, `Metering` and `Unknown`; absent evidence never renders as zero. Accompany local schedule times with their configured timezone.
+
 `CommandFeedback` distinguishes request pending, Host accepted, action in progress, succeeded and rejected. For example accepted pause remains “Pausing” until the checkpoint is confirmed; accepted cleanup is not “Removed.” Persisted Host command identifiers handle duplicate submission. Errors explain what failed and how to recover, with diagnostic details collapsed.
 
-UI language uses registered provider names on links and instructions. Core copy says ticket, tracker, code host or PR as appropriate; it does not always say Jira/GitHub. Configuration schemas and optional provider field contributions must work for a fixture external provider without editing this component map.
+UI language uses registered provider names on links, historical runs and instructions. Core copy says ticket, tracker, code host or PR as appropriate. Provider metadata/schema contributions own provider fields; optional Client enhancements cannot be required for a usable validated form. Unsupported required capabilities prevent activation with a reason, following [provider policy](providers.md#readiness-and-capabilities).
 
 ## Component acceptance
 
 Test components through operator-visible outcomes, not internal state variables. Include long issue titles, missing/renamed provider objects, empty/many runs, pagination, unknown usage, inaccessible PR, stale settings, in-flight command, disconnected Host and failed cleanup. Verify no click initiates model execution outside the Host policy.
 
-Capture integrated DSH screenshots for the scenarios and viewport sizes in [Web UI](web-ui.md). Component fixtures alone cannot prove slot mounting, navigation, theme compatibility or remote configuration. No visual implementation exists in this specification repository yet.
+- A fixture external provider supplies usable Settings without core UI changes; switching the supported provider pairs changes fields/labels but not run policy.
+- Open Operations without selecting a Session; inspect queue and health.
+- A pause command remains in progress until the Host confirms a checkpoint.
+- Reconnect retrieves the latest completed run without replaying an old command.
+- Human blockers have no Web authorization bypass; a completed PR with failed ntfy delivery shows both facts.
+- Unknown usage/PR disposition is distinct from zero/closed; cleanup rejection identifies the blocking condition.
+
+Capture integrated screenshots using [visual acceptance](web-ui.md#visual-acceptance). Component fixtures alone cannot prove slot mounting, theme compatibility or remote configuration.

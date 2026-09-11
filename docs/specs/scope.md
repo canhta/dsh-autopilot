@@ -14,7 +14,7 @@ V1 selects one tracker provider and one code-host provider for one project scope
 | Target repository | Source, AGENTS.md and applicable instructions, skills, build/test commands, contribution conventions | Supply its workspace to DSH; preserve its rules |
 | Git local | Worktree registration, branches, commits, working changes, tracking state | Manage only worktrees allocated to Autopilot runs; query Git before maintenance |
 | Code host (GitHub or Bitbucket) | Remote branches, PR identity, review, CI, merge/closure state | Publish completed work; hand review to humans; inspect PR disposition when evaluating cleanup |
-| DSH | Model/tool execution, Session history, supported persistence/continuation, preset/skills, subagent capabilities | Start or resume execution and consume evidence through supported interfaces |
+| DSH | Execution/Session services and platform infrastructure: presets/skills, MCP, delegation, API/SDK, Web, Settings, credentials and storage | Compose suitable public capabilities from the [reuse map](../research/dsh.md#capability-reading-map); implement only missing domain behavior |
 | Autopilot plugin | Admission policy, durable queue/run records, worktree ownership, pause intent, spending policy, integration receipts, notification delivery, UI commands | Coordinates the above systems; does not replace their records |
 | VPS deployment | Process supervision, persistent volumes, access authentication/TLS, backups, host credentials | Keeps the DSH profile available and its data recoverable |
 

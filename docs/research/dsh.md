@@ -2,33 +2,18 @@
 
 Inspected 2026-09-11 against DeepSeek Harness commit `c291e7961a515f6d7af9304e7fd1d257929aef26`. This is source evidence, not a supported release or live Autopilot compatibility claim. Stable requirements live in [execution](../specs/execution.md) and [plugin design](../specs/plugin.md). Validation work/results belong on GitHub.
 
-## Source-confirmed integration points
+## Capability reading map
 
-The following interfaces exist at the inspection baseline. Runtime requirements are defined in [execution](../specs/execution.md#acceptance); their validation is tracked on GitHub.
+Read only the branch needed by the implementation issue. Each linked page owns its pinned source facts; specs own required behavior.
 
-| Operation | Existing interface | Primary source |
+| Implementing | Source evidence | Reuse direction |
 | --- | --- | --- |
-| Create root execution | `ctx.agents.create({ sessionId, meta: { cwd }, agentOptions, setup })`; omit parent ownership for a root | [Agent registry](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/core/agent/src/index.ts#L62) |
-| Restore Session | `ctx.agents.resume({ resumeSessionId, agentOptions, setup })` returns a fresh runtime handle | [Resume request](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/core/agent/src/index.ts#L125) |
-| Drive and interrupt | `followup`, `cancel`, `whenIdle`; followup has no per-message completion result | [Runtime interface](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/core/agent/src/runtime-types.ts#L176) |
-| Flush | `ctx.sessions.flush(session)` returns a boolean; false means no durability listener participated | [Flush contract](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/core/session/src/index.ts#L1131) |
-| Release live execution | `AgentHandle.dispose()` closes the scoped runtime and persistence writer | [Disposal](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/core/agent-loop/src/index.ts#L573) |
-| Drain supported descendants | `ctx.subagent.drainContinuableDescendants(parents)` | [Descendant lifecycle](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/subagent/subagent/src/index.ts#L299) |
-| Intercept model traffic | `llm/stream` waterfall; `GenerateOptions` carries Session identity, purpose and output limit | [LLM interface](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/llm/llm/src/index.ts#L59) |
+| Root execution, continuation, skills, presets and delegation | [Execution](dsh-execution.md) | Compose DSH Agent/Session/skill/workflow services; keep admission and task outcomes in Autopilot. |
+| Host APIs, live updates, MCP and external clients | [Connectivity](dsh-connectivity.md) | Reuse typed Remotes/Gateway and protocol clients; add only domain operations. |
+| Configuration, credentials, storage, timing, ingress and Git | [Host platform](dsh-platform.md) | Use existing services where their durability and scope meet the requirement. |
+| Web components, Settings and Client packaging | [Web](dsh-web.md) | Reuse public atoms and injected slots/services, not private feature components. |
 
-Install scoped preset/policy/outcome contributions during the registry's awaited `setup`; submit work after publication. Keep the returned handle under one run owner. Identify the execution interval from durable input receipt through settlement; root status alone does not identify one message's result.
-
-Use the existing [Session checkpoint policy](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/session/session-checkpoint-policy/src/index.ts#L52) for log-before-model/tool-side-effect ordering. Autopilot still records its own run metadata and external publication intents.
-
-Checkpoint does not mean freezing an OS process. `whenIdle()` covers the root driver/maintenance, not every background facility. Long-running or uninterruptible tools may delay pause. Use supported cancellation/timeouts and prove each enabled background capability becomes quiescent. DSH terminals do not survive Host restart; record commands/environment setup that must be re-established rather than implying process memory survives.
-
-Cold resume closes incomplete tool/step/turn records during reconstruction; it does not rerun interrupted operations. Supply logged reconciliation context and inspect side effects before repeating work. See [reconstruction](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/core/agent-loop/src/index.ts#L844) and [terminal lifetime](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/terminal/terminal/README.md).
-
-Draining continuable descendants closes admission under the exact live parent until it leaves the registry. A pause strategy using that method must dispose/reconstruct the live root on the same Session, or prove a different supported lifecycle. Do not expect a drained live root to accept fresh delegation automatically.
-
-Session cwd selects the working directory; it is not a filesystem sandbox. Verify each selected tool routes paths through the Session and the permission/sandbox preset. Avoid process-global cwd changes.
-
-DSH's session reminder feature is not by itself the global scheduler required here. Its workflow/subagent facilities also do not establish Git worktree isolation automatically.
+The same capability name does not prove the same semantics: a Session reminder is not global admission, an MCP tool is not human authorization, and a SQLite backend is not a cross-record transaction. Verify the specific requirement before choosing reuse or a narrow extension.
 
 ## Remote-access observations
 
@@ -52,12 +37,6 @@ Sources were read without installing or executing their plugins. These observati
 Task-board's proxy pattern requires a same-host authenticated proxy to replace its internal token header after authentication. Origin or Fetch Metadata alone is not authentication. Apply this lesson to Autopilot-owned routes rather than copying a plugin-specific header or trusting client-supplied identity.
 
 Do not inherit unrelated capabilities such as desktop sleep prevention, plugin self-update, automatic public tunnels, shared relay infrastructure, or install telemetry merely by copying an example package. They are outside the [product scope](../specs/scope.md).
-
-## Model usage observations
-
-The inspected `TokenUsage` fields are disjoint: `inputTokens` means uncached input; cache-read and cache-write are separate categories. Reasoning usage must not be added again when already included in output usage. Provider adapters determine the available categories; absent usage is not evidence of zero. See [usage types](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/llm/llm/src/types.ts#L141).
-
-`GenerateOptions` carries Session identity, auxiliary request purpose and output limit, enabling attribution beyond conversational requests; see [request options](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/llm/llm/src/types.ts#L425). The [token-meter](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/llm/token-meter/README.md) uses heuristic estimates and cannot establish a billing-grade monetary bound. Enforcement requirements remain in [operations](../specs/operations.md#credit-and-spending).
 
 ## Framework references
 

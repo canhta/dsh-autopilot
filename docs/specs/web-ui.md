@@ -8,11 +8,11 @@ The default view is Queue & Runs, not a metrics dashboard. Use five local tabs: 
 
 The supported extension points and remote configuration restrictions are owned by [plugin engineering](plugin.md). Verify the selected access mode before claiming the Settings editor works through a VPS public URL. Its placement and its ability to persist settings are separate capabilities.
 
-Host state is authoritative. The browser reads revisioned snapshots/updates and submits narrow operator commands. On reconnect fetch current state before enabling stale actions. Persist view preferences only in browser storage. Every mutation reports accepted/pending/succeeded/rejected status; a button click is not proof of execution success.
+Data, command feedback and Settings behavior are defined in the [component specification](ui-components.md). This page owns navigation, visual rules, user journeys and visual acceptance.
 
 ## Navigation and reading order
 
-Use Queue & Runs as the default. The module/component catalog owns view content, filters and commands; see [UI components](ui-components.md). Navigate from a run to its evidence and external records without losing list position. Present human blockers, operational pauses and delivery failures distinctly. A table supports scanning; actual priority changes remain Host policy rather than drag-and-drop UI state.
+Navigate from a run to its evidence and external records without losing list position. Present human blockers, operational pauses and delivery failures distinctly. Use the [component catalog](ui-components.md) for table content, filters and commands.
 
 ## Layout and visual direction
 
@@ -55,36 +55,10 @@ Use sample content long enough to reveal layout failures: long issue titles, mul
 5. **Cleanup:** Worktrees → inspect exact target → preview with reasons → confirm → show actual result. A changed run/Git state invalidates the preview.
 6. **Provider change:** Settings explains dependent runs/intents and refuses an unsafe switch; do not offer a migration wizard or silently move history to another provider.
 
-## Action semantics
-
-The [component catalog](ui-components.md#operator-command-policy) owns commands and availability. Show why an action is unavailable and distinguish command acceptance from completed state. Audit mutations with operator identity when available, timestamp, request id, target and resulting revision. Destructive cleanup requires an exact preview and confirmation; human unblock remains in the configured tracker.
-
-## Settings and interaction states
-
-Group the fields from [operations configuration](operations.md) by providers/project/target, schedule/capacity, DSH execution, budget, notifications and retention. Show defaults/effective values and validate before saving. Concurrent stale edits receive a conflict and reload path instead of overwriting newer settings.
-
-Render provider selection and configuration from registered provider metadata/schema contributions; the shell must not hardcode a Jira/GitHub-only form. Show provider identity on issue/PR links and historical runs. Unsupported required capabilities prevent activation with a specific reason. Changing providers follows the binding-switch rules in [provider architecture](providers.md).
-
-Show credentials as configured/missing/error, never existing secret values. Channel settings support test delivery with explicit test labeling; sending a test is an operator action. Display a payload preview and disclosure setting without copying private execution content automatically.
-
-For each view implement loading, empty, unavailable, stale/disconnected and recoverable-error states. For metering use `Unknown` or `Metering` until evidence arrives. Keep local times accompanied by the scheduler timezone where scheduling decisions depend on it. Support keyboard navigation, labelled controls, readable focus, responsive layouts and DSH locale/theme conventions.
-
-## Acceptance scenarios and references
+## Visual acceptance
 
 Before accepting Client implementation, collect screenshots within the real DSH shell at 1440×900, 1024×768 and 390×844, in light and dark themes. Include populated runs + selected details, human blocker, budget pause, failed delivery, cleanup preview/rejection, provider Settings and empty/disconnected states. These are review deliverables for implementation, not evidence already produced.
 
 Check legibility and consistent alignment without page-level horizontal overflow; all important actions work with keyboard, visible focus and appropriate dialog focus return. Verify normal text contrast of at least 4.5:1 and meaningful non-text control contrast of 3:1, plus status comprehension without color. Test reduced motion, zoom/reflow, long localized copy and screen-reader names/live feedback. Review screenshots against the visual table above; reject the change if it introduces an unrelated design system or obscures operational decisions.
 
-- Switching between Jira/Linear and GitHub/Bitbucket changes provider fields and link labels without changing run behavior.
-- An external provider registers settings without modifying the core UI; missing Client enhancement still leaves a usable validated form.
-- Open Operations with no Session selected and inspect queue/health.
-- Disable scheduler while work is active; show pausing until Host acknowledgement.
-- Reconnect after a run finishes; display its current state without replaying an old operator command.
-- A blocker has no Web action that bypasses tracker authorization.
-- Completed PR plus failed ntfy delivery is presented as completion with a delivery issue.
-- Unknown budget or PR state is distinguishable from zero usage or a closed PR.
-- A cleanup rejection explains which Git/run condition prevents removal.
-
-Primary sources: [DSH layout](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/client/ui-layout/README.md), [Client modules](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/client/modules/README.md), [Settings](https://github.com/deepseek-ai/deepseek-harness/blob/c291e7961a515f6d7af9304e7fd1d257929aef26/packages/client/ui-settings/README.md).
-
-Community patterns: [taskboard](https://github.com/cloader/dsh-taskboard) for evidence and task details, [task status](https://github.com/vlln/dsh-task-status) for compact live feedback, [activity pane](https://github.com/ccll/dsh-activity-pane) for attention states. These are interaction references, not dependencies to install automatically.
+Functional scenarios belong to [component acceptance](ui-components.md#component-acceptance). Public DSH reuse options and source citations belong to [DSH Web research](../research/dsh-web.md).
