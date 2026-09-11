@@ -8,13 +8,17 @@ An issue is eligible only when it belongs to the configured project, carries the
 
 Persist admission and claim together so a ticket has at most one unfinished run. The configured queue capacity limits admitted waiting work. **Proposed implementation:** leave eligible overflow issues in tracker ready state, expose the capacity reason, and reconsider them during reconciliation.
 
-Event delivery identifiers deduplicate ingress retries. Run uniqueness additionally uses provider-qualified issue identity and a persisted readiness generation; unrelated issue edits must not create fresh runs. A blocked run becomes eligible only after a human explicitly returns the ticket to the ready label following the blocker. Bot label writes and comments alone cannot generate that authorization. Providers must supply the readiness evidence required by [provider architecture](provider-architecture.md); current labels alone do not prove a human transition.
+Event delivery identifiers deduplicate ingress retries. Run uniqueness additionally uses provider-qualified issue identity and a persisted readiness generation; unrelated issue edits must not create fresh runs. Authorization for each generation follows the human-readiness rules below.
+
+## Human readiness authorization
+
+Require an attributable human ready transition after a blocker and for any new readiness generation. A comment, current label snapshot or bot-authored update alone cannot establish it. Reject known automation and unknown attribution. Where a tracker cannot distinguish human activity from user-token automation, require a documented trusted-actor deployment assumption; do not claim technical proof of a person. Quiesce or reconcile older readiness-mutating intents before accepting a new generation; unresolved ordering remains an explicit integration conflict. Provider evidence fields are defined in [providers](providers.md), and mutation ordering in [integrations](integrations.md).
 
 ## State transitions
 
 | State | Meaning | Permitted next states |
 | --- | --- | --- |
-| queued | Admitted and waiting for dispatch | implementing, paused, blocked, cancelled |
+| queued | Admitted continuation or new work waiting for dispatch | implementing, publishing for a verified publication continuation, paused, blocked, cancelled |
 | implementing | DSH executing; its reported phase is metadata | pausing, blocked, publishing, failed |
 | pausing | Pause requested; execution not yet proven quiescent | paused, blocked, failed |
 | paused | Durable continuation state retained; no execution active | queued, blocked, cancelled |
@@ -30,11 +34,13 @@ Planning, implementation, and verification can be displayed as DSH-reported phas
 
 Ordering: eligible resumptions before new work; within each group, configured normalized tracker priority then oldest queue entry, followed by a stable identity tie-breaker. This means a resumption takes precedence over a higher-priority new issue; do not claim the reverse in UI copy.
 
-Dispatch requires scheduler admission to be enabled and inside its configured window, current tracker eligibility, available concurrency, and the budget authorization in [operations](operations.md). Claiming a slot and recording dispatch must be serialized. Paused and blocked runs consume no execution slot after their execution has stopped.
+Dispatch requires scheduler admission to be enabled and inside its configured window, current tracker eligibility, available concurrency, and any required model-spending authorization in [operations](operations.md). Claiming a slot and recording dispatch must be serialized. Paused and blocked runs consume no execution slot after their execution has stopped.
 
 If eligibility changes while queued, do not start it. Record the reason and retain its history. Already-running work receives material tracker changes at a safe execution boundary; a human scope change cannot silently rewrite the snapshotted brief.
 
 ## Pause and continuation
+
+Persist a continuation target (`implementing` or `publishing`) when pausing. A queued publication continuation reconciles the existing intent and verified Git state, then returns to publishing without starting another coding turn. If a matching PR is already confirmed, record its receipt before considering new side effects. A changed verified state requires explicit re-verification, not blind publication.
 
 Disabling the scheduler stops admission/dequeue and requests pause for active execution. Drain is a separate command: it stops new admission/dequeue while allowing current work to finish. Scheduler resume reconsiders paused runs through the ordinary gates; it cannot clear a tracker blocker or an unmet budget limit.
 
@@ -42,9 +48,9 @@ A per-run Stop at checkpoint sets a durable operator hold. Global scheduler resu
 
 A pause is acknowledged only after execution and its owned child/tool processes have stopped or settled, DSH persistence is flushed, and the plugin checkpoint is saved. Keep the Session association and worktree. Record pause reason, last completed phase, pending actions, and any interrupted operation. Pausing a publishing run must first reconcile any in-flight external request.
 
-On continuation, verify the retained Session is readable, worktree ownership matches, Git state is usable, and tracker/PR state has not invalidated the work. Continue the same logical run and supported DSH Session. A missing worktree or incompatible Session is an explicit recovery problem, not permission to start over silently.
+For work that already entered execution, verify the retained Session is readable, worktree ownership matches, Git state is usable, and tracker/PR state has not invalidated the work. Continue the same logical run and supported DSH Session. A missing previously allocated worktree or incompatible Session is an explicit recovery problem, not permission to start over silently. A new queued run paused before allocation has no Session/worktree to restore; persist its admission and hold instead.
 
-The DSH capability and interruption limitations are owned by [DSH execution](dsh-execution.md).
+The DSH capability and interruption limitations are owned by [DSH execution](execution.md).
 
 ## Blocker and failure
 
@@ -71,4 +77,5 @@ After a restart, reconcile unfinished runs before dispatch: compare the journal 
 - Enable scheduler: eligible paused work precedes new tickets and obeys remaining budget/capacity.
 - A reply comment without human readiness change leaves the run blocked.
 - Crash after PR creation but before receipt persistence: recovery locates that PR and does not create another.
+- Pause after Git push and before PR creation: resume reconciles publication without another coding turn.
 - Final tracker delivery fails: PR remains completed, delivery remains retryable, coding is not repeated.

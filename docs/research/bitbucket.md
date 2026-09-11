@@ -2,7 +2,7 @@
 
 ## Status and scope
 
-Planned provider, not implemented. **Initial assumption:** Bitbucket Cloud REST 2.0 at `https://api.bitbucket.org/2.0`; Bitbucket Data Center requires a separate adapter and validation. This file owns Cloud-specific behavior. Shared publication authorization, recovery and completion remain in [integrations](integrations.md); retention remains in [operations](operations.md).
+**Proposed initial target:** Bitbucket Cloud REST 2.0 at `https://api.bitbucket.org/2.0`; Bitbucket Data Center requires a separate adapter and validation. This file owns Cloud-specific behavior. Shared publication authorization, recovery and completion remain in [integrations](../specs/integrations.md); retention remains in [operations](../specs/operations.md).
 
 ## Repository identity and Git transport
 
@@ -12,7 +12,7 @@ Publish commits through Git push; REST creates the PR referencing that branch. C
 
 ## Authentication
 
-Use scoped API tokens for a simple VPS deployment; OAuth is another supported integration option. App passwords are obsolete setup guidance. REST API tokens support Basic authentication with Atlassian email/token and currently Bearer authentication; Git username rules differ. Keep token expiry/refresh behavior explicit for the chosen mode. [API tokens](https://support.atlassian.com/bitbucket-cloud/docs/api-tokens/), [authentication](https://support.atlassian.com/bitbucket-cloud/docs/using-api-tokens/).
+**Implementation option:** scoped API tokens suit a simple VPS deployment; OAuth is another supported integration option. App passwords are obsolete setup guidance. REST API tokens support Basic authentication with Atlassian email/token and currently Bearer authentication; Git username rules differ. Keep token expiry/refresh behavior explicit for the chosen mode. [API tokens](https://support.atlassian.com/bitbucket-cloud/docs/api-tokens/), [authentication](https://support.atlassian.com/bitbucket-cloud/docs/using-api-tokens/).
 
 For API tokens, provision `read:repository:bitbucket`, `write:repository:bitbucket`, `read:pullrequest:bitbucket` and `write:pullrequest:bitbucket` as required by the chosen transport. Write scopes do not automatically grant read or other resource scopes. Do not request repository administration or deletion. PR write permission also permits merge/decline; the adapter must expose only authorized operations. OAuth scope names differ and require their own mapping. [Permissions](https://support.atlassian.com/bitbucket-cloud/docs/api-token-permissions/).
 

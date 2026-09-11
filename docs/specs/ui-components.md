@@ -23,13 +23,33 @@ Modules call the same typed Host query/command client. Views must not own poller
 | `OperationsShell` | DSH main-slot content only; owns local view and selected-run state. Contains header, conditional attention strip, local tabs and one content region. Does not redraw DSH navigation or model chat. |
 | `OperationsHeader` | Title, current project/provider identity, scheduler mode with reason, last refresh/reconcile age. One contextual primary control: Pause when enabled, Resume when paused. Drain/reconcile/settings remain labelled secondary actions. |
 | `AttentionStrip` | Only actionable health/recovery/provider failures. A concise reason and one destination action; grouped count opens filtered runs/deliveries. No permanent decorative health banner. |
-| `RunsToolbar` | Search issue key/summary, lifecycle filter, priority filter, attention-only toggle and visible result count. State persists when opening/closing details. Clear filters is available when results are empty. |
+| `RunsToolbar` | Search issue key/summary, lifecycle filter, priority and age filters, attention-only toggle and visible result count. State persists when opening/closing details. Clear filters is available when results are empty. |
 | `RunsTable` | Columns in order: issue key + summary; lifecycle + reason; priority; current phase; elapsed; spend qualification; updated age. Leading identity is flexible; numbers align right. Row activation opens details; explicit links and action buttons do not activate the row twice. Host pagination and stable ids; no drag-to-reprioritize control. |
 | `RunDetailPanel` | Header with ticket identity, lifecycle/reason and allowed actions. First show required human action or pause condition; completed runs show PR and verification. Then Brief/dependencies, ordered event timeline, verification, workspace/Session, spend and deliveries as collapsible sections. No second dashboard inside the panel. |
 
 Run detail uses composition: `BlockerCallout` renders numbered questions and the exact tracker action; `VerificationSummary` renders checks/results/skips and verified Git identity; `RunTimeline` renders timestamped normalized events, grouping repeated retries; `ResourceLinks` links to tracker, DSH Session, PR and worktree details. None derives success from prose or infers a next action from status color.
 
-The panel footer uses the action policy in [Web UI](web-ui.md); the Host rechecks permissions/state on every command. A human blocker's continuation action goes to the tracker, never an Autopilot approval button; cancelling the run remains a separate terminal action. Preserve scroll/selection if an update arrives; announce significant state changes without moving focus.
+The panel footer uses the operator-command policy below; the Host rechecks permissions/state on every command. A human blocker's continuation action goes to the tracker, never an Autopilot approval button; cancelling the run remains a separate terminal action. Preserve scroll/selection if an update arrives; announce significant state changes without moving focus.
+
+## Operator-command policy
+
+| Action | Visible behavior |
+| --- | --- |
+| Pause scheduler | Explains that active work is pausing; displays unfinished pauses until checkpointed |
+| Resume scheduler | Re-evaluates paused/queued work through normal gates |
+| Drain | Stops new admission/dequeue while current runs finish |
+| Reconcile now | Fetches current tracker state under ordinary admission policy |
+| Cancel run | Available for quiescent queued/paused/blocked runs; retains worktree/history and cannot silently requeue on an unchanged tracker poll |
+| Stop at checkpoint | Requests an operational pause and durable operator hold for the selected run |
+| Resume paused run | Clears that run's operator hold and queues continuation only if all other gates permit; otherwise shows the unmet condition |
+| Retry notification | Retries selected delivery without repeating code execution |
+| Cleanup worktree | Shows exact removal preview and rejection reasons before confirmation |
+| Open ticket / Session / PR | Opens the associated system record |
+
+A blocked run shows `Waiting for a human in {trackerName}`, its questions and `Open in {trackerName}`. Human unblock authorization stays on tracker. Display the reason for unavailable actions; do not silently ignore them. Destructive cleanup requires confirmation of the preview, while ordinary reads do not.
+
+
+Mapping repair is available only for failed tracker projections under [delivery repair](operations.md#repairing-a-broken-delivery-mapping). Show the old/new mapping and affected intent, validate and confirm; never expose it as an unblock shortcut.
 
 ## Operational components
 

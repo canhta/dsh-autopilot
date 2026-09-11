@@ -22,29 +22,9 @@ An optional remote-access plugin belongs to deployment composition: it owns pair
 
 The DSH agent determines code changes and verification using target-repo rules. Autopilot does not prescribe a universal lint/test checklist or judge code quality independently. It checks that execution supplied the required outcome and evidence before authorizing publication.
 
-Publication and tracker lifecycle writes have one designated execution path controlled by Autopilot. The concrete Git/PR mechanism remains D4 in [the decision register](README.md). Avoid duplicate publication by both an unconstrained agent and a Host publisher.
+Publication and tracker lifecycle writes have one designated execution path controlled by Autopilot. Select the concrete publication executor through the implementation issue on GitHub. Avoid duplicate publication by both an unconstrained agent and a Host publisher.
 
-Provider interfaces, selection and extension are owned by [provider architecture](provider-architecture.md). All four tracker/code-host combinations are in the implementation scope; provider selection does not add multi-project administration.
-
-## Terminology
-
-| Term | Meaning |
-| --- | --- |
-| Tracker provider | Cordis plugin adapting an issue system to Autopilot admission and human-feedback operations |
-| Code-host provider | Cordis plugin adapting a hosting system to PR publication and disposition queries |
-| Provider binding | Persisted selection of a provider implementation and configured connection; not the credential value |
-| Project scope | One configured tracker project; team/workspace context is provider-specific |
-| Plugin repository | This repository, `canhta/dsh-autopilot` |
-| Target repository | The codebase modified for a tracker ticket |
-| Agent Brief | A designated tracker comment defining approved execution scope and acceptance criteria |
-| Run | Durable Autopilot record for one admitted ticket execution, including pause/resume history |
-| Attempt | An execution interval within a run; resumption does not silently create a new run |
-| Session | DSH-owned execution history associated with the run |
-| Checkpoint | Recorded continuation information after execution becomes quiescent; not a snapshot of arbitrary processes |
-| Worktree | Git working directory allocated to a run |
-| Blocker | A question or condition requiring a human tracker decision before work continues |
-| Operational pause | Resumable stop caused by scheduler, operator, or budget policy |
-| Completed | PR publication has been confirmed; subsequent delivery state is tracked separately |
+Provider interfaces, selection and extension are owned by [provider architecture](providers.md). All four tracker/code-host combinations are in the implementation scope; provider selection does not add multi-project administration.
 
 Tracker intent, plugin run state, DSH execution state, and code host PR state are distinct. For example, a completed Autopilot run may have a tracker ticket still In Review and a PR still open.
 

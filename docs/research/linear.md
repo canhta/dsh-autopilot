@@ -1,6 +1,6 @@
 # Linear tracker provider
 
-**Status:** planned provider; source research checked 2026-09-11, not a working integration. Shared admission, Agent Brief, reporting and delivery rules remain in [lifecycle](lifecycle.md) and [integrations](integrations.md). This document owns Linear-specific mappings and verification gaps.
+Source research checked 2026-09-11; these observations do not establish a working integration. Shared admission, Agent Brief, reporting and delivery rules remain in [lifecycle](../specs/lifecycle.md) and [integrations](../specs/integrations.md). This document owns Linear-specific mappings and verification gaps.
 
 ## Identity and configuration
 

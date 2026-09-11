@@ -6,24 +6,13 @@ Add `AIDLC Operations` as a global DSH Web sidebar entry. The panel works withou
 
 The default view is Queue & Runs, not a metrics dashboard. Use five local tabs: Queue & Runs, Schedule, Budget, Notifications, Worktrees. Keep provider and policy editing in DSH Settings. Do not add a second app-wide sidebar. [UI components](ui-components.md) owns the exact module/component responsibilities and query/command behavior.
 
-The supported extension points and remote configuration restrictions are owned by [plugin engineering](plugin-engineering.md). Resolve D6 before claiming the Settings editor works through a VPS public URL. Its placement and its ability to persist settings are separate capabilities.
+The supported extension points and remote configuration restrictions are owned by [plugin engineering](plugin.md). Verify the selected access mode before claiming the Settings editor works through a VPS public URL. Its placement and its ability to persist settings are separate capabilities.
 
 Host state is authoritative. The browser reads revisioned snapshots/updates and submits narrow operator commands. On reconnect fetch current state before enabling stale actions. Persist view preferences only in browser storage. Every mutation reports accepted/pending/succeeded/rejected status; a button click is not proof of execution success.
 
-## Operations views
+## Navigation and reading order
 
-| View | Required content |
-| --- | --- |
-| Header summary (not a separate tab) | Scheduler mode, capacity and actionable attention count; show integration/recovery problems only when relevant |
-| Queue & Runs | tracker key/summary, priority, queue order, run state, reported phase, elapsed time, spend qualification, latest meaningful event |
-| Schedules | Effective enabled state, cadence/windows/timezone, next occurrence and recent reconciliation results; link to edit settings |
-| Budget | Provider balance when available; enforced cap, settled/reserved/remaining values, unknown coverage, warnings and paused runs |
-| Notifications | Destination labels, event/delivery history, pending/retrying/exhausted state, last sanitized error and retry action |
-| Worktrees | Run/tracker association, branch, activity, Git changes, remote/PR state, disk usage, cleanup eligibility and preview |
-
-Use a table for runs with filters by state/priority/age; a Kanban board and drag-and-drop scheduling are outside the initial UI. The [lifecycle](lifecycle.md) owns statuses and order. Distinguish human blockers from operational pauses, and execution completion from notification delivery problems. Avoid invented completion percentages for an agent's unknown remaining work.
-
-Task details show the Brief snapshot, tracker dependencies/questions, event timeline, DSH Session link, worktree/branch, verification evidence, PR link, budget breakdown and delivery history. Expand diagnostic IDs/logs only when requested.
+Use Queue & Runs as the default. The module/component catalog owns view content, filters and commands; see [UI components](ui-components.md). Navigate from a run to its evidence and external records without losing list position. Present human blockers, operational pauses and delivery failures distinctly. A table supports scanning; actual priority changes remain Host policy rather than drag-and-drop UI state.
 
 ## Layout and visual direction
 
@@ -66,30 +55,15 @@ Use sample content long enough to reveal layout failures: long issue titles, mul
 5. **Cleanup:** Worktrees → inspect exact target → preview with reasons → confirm → show actual result. A changed run/Git state invalidates the preview.
 6. **Provider change:** Settings explains dependent runs/intents and refuses an unsafe switch; do not offer a migration wizard or silently move history to another provider.
 
-## Operator actions
+## Action semantics
 
-| Action | Visible behavior |
-| --- | --- |
-| Pause scheduler | Explains that active work is pausing; displays unfinished pauses until checkpointed |
-| Resume scheduler | Re-evaluates paused/queued work through normal gates |
-| Drain | Stops new admission/dequeue while current runs finish |
-| Reconcile now | Fetches current tracker state under ordinary admission policy |
-| Cancel run | Available for quiescent queued/paused/blocked runs; retains worktree/history and cannot silently requeue on an unchanged tracker poll |
-| Stop at checkpoint | Requests an operational pause and durable operator hold for the selected run |
-| Resume paused run | Clears that run's operator hold and queues continuation only if all other gates permit; otherwise shows the unmet condition |
-| Retry notification | Retries selected delivery without repeating code execution |
-| Cleanup worktree | Shows exact removal preview and rejection reasons before confirmation |
-| Open ticket / Session / PR | Opens the associated system record |
-
-A blocked run shows `Waiting for a human in {trackerName}`, its questions and `Open in {trackerName}`. Human unblock authorization stays on tracker. Display the reason for unavailable actions; do not silently ignore them. Destructive cleanup requires confirmation of the preview, while ordinary reads do not.
-
-Audit mutations with operator identity if supplied by authentication, timestamp, request id, target and resulting state/revision. See [operations](operations.md) for the one-role access model.
+The [component catalog](ui-components.md#operator-command-policy) owns commands and availability. Show why an action is unavailable and distinguish command acceptance from completed state. Audit mutations with operator identity when available, timestamp, request id, target and resulting revision. Destructive cleanup requires an exact preview and confirmation; human unblock remains in the configured tracker.
 
 ## Settings and interaction states
 
 Group the fields from [operations configuration](operations.md) by providers/project/target, schedule/capacity, DSH execution, budget, notifications and retention. Show defaults/effective values and validate before saving. Concurrent stale edits receive a conflict and reload path instead of overwriting newer settings.
 
-Render provider selection and configuration from registered provider metadata/schema contributions; the shell must not hardcode a Jira/GitHub-only form. Show provider identity on issue/PR links and historical runs. Unsupported required capabilities prevent activation with a specific reason. Changing providers follows the binding-switch rules in [provider architecture](provider-architecture.md).
+Render provider selection and configuration from registered provider metadata/schema contributions; the shell must not hardcode a Jira/GitHub-only form. Show provider identity on issue/PR links and historical runs. Unsupported required capabilities prevent activation with a specific reason. Changing providers follows the binding-switch rules in [provider architecture](providers.md).
 
 Show credentials as configured/missing/error, never existing secret values. Channel settings support test delivery with explicit test labeling; sending a test is an operator action. Display a payload preview and disclosure setting without copying private execution content automatically.
 

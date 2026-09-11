@@ -1,6 +1,6 @@
 # Provider architecture
 
-This page owns replaceable integration interfaces. [Scope](scope-and-ownership.md) owns product responsibilities; [integrations](integrations.md) owns external behavior. Interface names below are proposed Autopilot types, not existing DSH APIs.
+This page owns replaceable integration interfaces. [Scope](scope.md) owns product responsibilities; [integrations](integrations.md) owns external behavior. Interface names below are proposed Autopilot types, not existing DSH APIs.
 
 ## Composition
 
@@ -20,7 +20,7 @@ Publish the Service Definitions and registration types for external plugins. Kee
 | Code host | Validate repository/access; resolve Git remote/base; find/create/reconcile PR; read normalized disposition | Publication controller, maintenance, Settings lookups |
 | Notification | Validate destination; deliver a versioned event; classify result/retry and reconcile where supported | Durable delivery worker, Settings test action |
 
-Registration supplies a stable provider id, interface version, display metadata, validated configuration schema, capability declaration and a binding factory returning a disposer. Reject duplicate ids and incompatible versions. Register through an effect-owned lifetime; required service injection uses Cordis activation rules. Schemas are Host authoritative; optional Client contributions may improve selectors but cannot change validation.
+**Proposed registration design:** supply a stable provider id, interface version, display metadata, validated configuration schema, capability declaration and a binding factory returning a disposer. Reject duplicate ids and incompatible versions. Register through an effect-owned lifetime; required service injection uses Cordis activation rules. Schemas are Host authoritative; optional Client contributions may improve selectors but cannot change validation.
 
 Expose small operation groups, not a universal HTTP request escape hatch. An installed provider can use REST, GraphQL, a maintained SDK or a constrained MCP integration internally only if it satisfies the same evidence/recovery obligations. Credential values, client objects and arbitrary vendor JSON do not become core run fields.
 
@@ -36,7 +36,7 @@ Operation errors distinguish authentication, permission, invalid configuration, 
 
 ## Readiness and capabilities
 
-The shared requirement is an attributable human readiness transition on the tracker, never a reply alone or a Web override. Providers return actor identity, transition identifier/order evidence, before/after readiness and origin confidence. Authenticated ingress proves sender integrity, not that the actor is human. Reject known automation; require explicit trusted-actor policy where user-token automation is indistinguishable. Unknown attribution fails closed. Polling a currently ready label cannot reconstruct a missed human transition by itself.
+Providers return actor identity, transition identity/order evidence, before/after readiness and origin confidence sufficient for the [lifecycle authorization policy](lifecycle.md#human-readiness-authorization). Report absent evidence explicitly; provider authentication or a user-shaped actor record is not a substitute.
 
 Require scope reads, designated comments, dependencies, configured label/status writes, human-readiness evidence and PR reconciliation for the selected workflow. Validate required capabilities before enabling dispatch. Optional webhooks or rich selectors can fall back to reconciliation/basic inputs only if required semantics remain provable. Do not silently omit dependency checks or weaken authorization to accommodate a provider. Explain unsupported configurations in health and Settings.
 
@@ -46,7 +46,7 @@ Configuration selects installed provider ids and validated binding fields: track
 
 Operators may change mappings, labels, schedules and connection settings without editing source. Adding a genuinely new protocol requires installing a compatible provider plugin; an arbitrary URL/JSON template is not automatically a complete tracker integration. Install through trusted DSH composition, not code pasted into a ticket or a browser form.
 
-Snapshot binding identity/version with each run and each external intent. Credential rotation changes the resolved secret without reassigning that identity. In v1 reject a provider/project/repository-binding switch while unfinished runs or unresolved external intents depend on it; pause is not migration. Require explicit resolution/cancellation and successful reconciliation first. Mapping changes follow the same dependency restrictions in [operations](operations.md). Preserve historical references after a switch; maintenance still requires the original provider/binding or reports unknown and retains worktrees. Never reinterpret old receipts through a newly selected provider.
+Snapshot binding identity/version with each run and each external intent. Credential rotation changes the resolved secret without reassigning that identity. In v1 reject a provider/project/repository-binding switch while unfinished runs or unresolved external intents depend on it; pause is not migration. Require explicit resolution/cancellation and successful reconciliation first. Mapping edits and the narrow delivery-repair exception follow [operations](operations.md). Preserve historical references after a switch; maintenance still requires the original provider/binding or reports unknown and retains worktrees. Never reinterpret old receipts through a newly selected provider.
 
 On provider unload, fence dependent dispatch/publication and await owned requests before disposal. Reconcile uncertain effects after remount; no duplicate pollers, sends or PRs. A temporarily unavailable provider must not delete queued work or erase receipts.
 
@@ -54,4 +54,4 @@ On provider unload, fence dependent dispatch/publication and await owned request
 
 Ship shared conformance fixtures/helpers with the public interface: paginated reads, unknown access, actor attribution, label preservation, mapped priorities/statuses, ambiguous writes, replay, rate limits, redaction, disposal and restart recovery. Code-host fixtures include PR identity matching and open/merged/closed-unmerged/unknown cleanup dispositions.
 
-Prove all four tracker/code-host combinations through the same fixture end-to-end suite. Obtain live evidence for each shipped provider on authorized test resources. A third-party fixture provider must load, register Settings and pass conformance without modifying core imports, switch statements or UI routing. Record supported DSH/interface/provider versions. Source research in [Linear](linear-provider.md) and [Bitbucket](bitbucket-provider.md) is not a supported-provider certification.
+Prove all four tracker/code-host combinations through the same fixture end-to-end suite. Obtain live evidence for each shipped provider on authorized test resources. A third-party fixture provider must load, register Settings and pass conformance without modifying core imports, switch statements or UI routing. Record supported DSH/interface/provider versions. Source research in [Linear](../research/linear.md) and [Bitbucket](../research/bitbucket.md) is not a supported-provider certification.

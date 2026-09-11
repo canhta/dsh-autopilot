@@ -8,25 +8,27 @@ Use startup reconciliation of current tracker state rather than replaying every 
 
 Own one validated configuration with a persisted revision and immutable per-run snapshots. Web edits and file-based deployment settings must have explicit precedence and show effective values. Operator edits affect future admission immediately; reductions to capacity do not kill existing work, while scheduler disable requests pause. Budget reductions stop additional spending authorization under the budget policy below. Record changes affecting active runs.
 
-Run snapshots preserve execution scope and integration interpretation, not permission to ignore current scheduler/budget restrictions. Reject changes to labels, Brief selection, dependency/review-state mappings or priority mappings while unfinished runs or unresolved intents use those mappings; explain the dependents in Settings. Credential rotation and safe operational limit edits remain available. Future-only execution settings do not silently replace the retained Session's preset/model configuration.
+Run snapshots preserve execution scope and integration interpretation, not permission to ignore current scheduler/budget restrictions. Reject ordinary changes to labels, Brief selection, dependency/review-state mappings or priority mappings while unfinished runs or unresolved intents use those mappings; explain the dependents in Settings. The delivery-repair operation below is the narrow exception. Credential rotation and safe operational limit edits remain available. Future-only execution settings do not silently replace the retained Session's preset/model configuration.
 
 | Configuration group | Required choices |
 | --- | --- |
 | Tracker | Provider binding, project scope, credential reference, ready/state label mapping, Brief selection, completed/review status mapping |
-| Target | Code-host provider binding, explicit repository/workspace routing, base branch; D2 must be resolved |
+| Target | Code-host provider binding, explicit repository/workspace routing, base branch; routing policy must be explicit |
 | Scheduler | Enabled, cadence, timezone, allowed windows, running/queue limits |
 | Execution | Supported DSH version, preset, model route where needed, timeouts and delegation policy |
 | Budget | Enforcement mode, scope limits, warning threshold, accounting currency/units, pricing source/version, unknown-usage policy |
 | Notifications | Channels, event subscriptions, secret references, disclosure, retries/timeouts |
 | Storage | Runtime data/worktree roots, cleanup retention, history retention and backup location |
 
-Provider bindings and extension rules are owned by [provider architecture](provider-architecture.md). Provider-specific fields use their registered schemas; credentials remain references. Resolve priority ordering explicitly rather than comparing provider-native numbers.
+Provider bindings and extension rules are owned by [provider architecture](providers.md). Provider-specific fields use their registered schemas; credentials remain references. Resolve priority ordering explicitly rather than comparing provider-native numbers.
 
 These are semantic configuration groups, not a final YAML schema. Validate references as soon as resolvable and reject invalid writes without replacing valid configuration. Store credentials through supported Host credential facilities, not in model-visible run snapshots.
 
-Default semantic label names (resolve to provider-specific IDs where required): `ready-for-agent`, `agent-queued`, `agent-implementing`, `agent-paused`, `agent-blocked`, `agent-failed`, `agent-completed`. Keep internal pausing/publishing/cancelled details in the run record unless an operator configures additional mappings. Operational pause reasons share `agent-paused`; they do not require a new label per reason. Label mutations preserve unrelated tracker labels.
+Tracker label defaults and projection behavior are owned by [integrations](integrations.md#tracker-projections).
 
-**Proposed readiness projection:** retain the ready label during queue/execution/operational pause, alongside one current agent-state label. Remove it on human blocker and terminal outcomes. A new human ready transition authorizes blocker continuation or a new execution after a terminal run; repeating the current state does not. Persist the consumed readiness generation so failed tracker label delivery cannot cause re-admission.
+## Repairing a broken delivery mapping
+
+An operator may repair a failed mutable tracker projection when its remote label/status mapping is missing or invalid. Fence that issue’s projection worker and settle/reconcile any in-flight request first. Validate a replacement for the same semantic output in the same provider/project/issue; this operation cannot change approved execution scope, readiness authorization or target routing. Preserve the original mapping/revision and receipt history, retire the obsolete intent, and atomically persist a revisioned replacement intent using current lifecycle state. Preview the affected destination/state before confirmation. Re-run projection validation after any intervening issue/run change; never revive a superseded blocked/completed projection merely to make delivery succeed. This permits correcting a deleted review state after PR completion without rerunning code or rewriting prior run snapshots.
 
 ## Credit and spending
 
@@ -42,7 +44,7 @@ When budget becomes unavailable, request an operational pause, retain continuati
 
 Use provider-reported token usage and a recorded pricing version for estimates. Preserve input/cache/output categories supported by the provider. Credential, provider and model changes cannot silently mix currencies or invent conversions.
 
-The source-confirmed request hook is listed in [DSH execution](dsh-execution.md). Cover conversation requests, retries, compaction, title generation and enabled children; map each to a run before authorization. Unowned model requests need an explicit deployment policy. DSH usage reports uncached input separately from cache-read/write; do not count reasoning tokens again when already included in output. Its token-meter is heuristic, not a billing-grade monetary bound.
+The source-confirmed request hook and token categories are recorded in [DSH research](../research/dsh.md). Cover conversation requests, retries, compaction, title generation and enabled children; map each to a run before authorization. Unowned model requests need an explicit deployment policy. Use those category definitions without double-counting; an estimate is not proof of a monetary upper bound.
 
 ## Durable state
 
@@ -68,12 +70,13 @@ Provide one tested Linux deployment recipe using a supported DSH profile with pr
 
 Expose the Web UI through authenticated access and TLS using the supported DSH deployment model. One operator role has all application capabilities. Authentication can be provided by the deployment; identify the operator in audit when available, without introducing an account-management/RBAC subsystem. Protect state-changing requests through supported origin/authentication controls. Treat webhook ingress authentication independently of browser login.
 
-Resolve D6 using the access constraints in [plugin engineering](plugin-engineering.md). The baseline CLI rejects `--host 0.0.0.0`, and a public-domain browser does not automatically receive durable Settings access. SSH forwarding is a candidate administrative access mode; any remote-access plugin or reverse proxy needs its own actual-host validation. Do not claim a tested VPS recipe until that path works end to end.
+Use the verified access composition required by [plugin design](plugin.md). Candidate transports and upstream limitations are recorded in [DSH research](../research/dsh.md); a deployment recipe requires end-to-end evidence.
 
 Health reports distinguish process alive, store usable, recovery complete, integrations available and admission permitted. A healthy paused scheduler is not a failure. Logs carry run/event identifiers and sanitized errors; avoid ticket transcripts and credential values.
 
 ## Acceptance scenarios
 
+- A deleted review state can be repaired after PR completion without blocking on its own failed delivery or restarting execution.
 - Competing dispatches cannot reserve the same remaining budget twice.
 - Missing usage stays unknown and cannot be shown as zero spending.
 - Budget reset during an in-flight request preserves its accounting obligation.
@@ -82,5 +85,3 @@ Health reports distinguish process alive, store usable, recovery complete, integ
 - Cleanup preview becomes stale after resume; deletion is rejected.
 - Completed run with open PR remains retained beyond seven days.
 - Merged, clean, remotely accounted work passes retention cleanup while its Session/report remains available.
-
-Community references: [dsh-automation](https://github.com/titanwings/dsh-automation) for schedule/run history, [dsh-budget](https://github.com/PerryLink/dsh-budget) for budget presentation. Verify their internals before considering reuse.
