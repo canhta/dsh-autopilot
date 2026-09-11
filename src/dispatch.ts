@@ -2,14 +2,20 @@ import { mkdir } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
+import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type GenerateOptions, type StreamChunk, type TokenUsage } from '@deepseek-ai/dsh-llm'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Workspace } from '@deepseek-ai/dsh-workspace'
 import type {
+  AdmissionSnapshot,
+  AutopilotRun,
   ExecutionOutcome,
   GitExecutionSnapshot,
   ImplementingRun,
+  PausedActiveRun,
+  PausingRun,
+  RunId,
   RunUsageSettlement,
   TerminalRun,
 } from './admission.js'
@@ -41,6 +47,15 @@ interface ReportRecorder {
   violation?: string
 }
 
+interface ActiveExecution {
+  handle?: AgentHandle
+  pauseRequested: boolean
+  readonly completion: Promise<void>
+  complete(): void
+}
+
+type DispatchResult = TerminalRun | PausedActiveRun
+
 /** Fixture-only durable dispatcher built from the DSH Agent, Session, Workspace, Tool, LLM, and Subprocess seams. */
 export class Dispatch extends Service {
   static readonly inject = [
@@ -54,6 +69,8 @@ export class Dispatch extends Service {
     'subprocess',
   ]
 
+  private readonly active = new Map<RunId, ActiveExecution>()
+
   constructor(ctx: Context) {
     super(ctx, 'dispatch')
   }
@@ -66,14 +83,72 @@ export class Dispatch extends Service {
    * when the aggregate remains writable; an aggregate write failure rejects for explicit recovery. This first-slice
    * operation accepts no caller cancellation signal.
    */
-  async dispatchNext(): Promise<TerminalRun | undefined> {
+  async dispatchNext(): Promise<DispatchResult | undefined> {
     const claimed = await this.ctx.admission.claimNext()
     if (claimed === undefined) return undefined
-    let run = claimed
+    const active = activeExecution()
+    this.active.set(claimed.runId, active)
+    try {
+      return await this.executeClaimed(claimed, active)
+    } finally {
+      this.active.delete(claimed.runId)
+      active.complete()
+    }
+  }
+
+  /**
+   * Atomically disable scheduler admission/dequeue, request native cancellation for every live root, and resolve only
+   * after each owned execution has reached a durable pause checkpoint. Cancellation-resistant work remains `pausing`
+   * and keeps its reservation while this operation waits. Recovered runs without a live owner remain explicit recovery.
+   */
+  async disableScheduler(): Promise<AdmissionSnapshot> {
+    const requested = await this.ctx.admission.requestSchedulerDisable()
+    await Promise.all(requested.pausingRunIds.map((runId) => this.pauseOwnedExecution(runId, 'scheduler disabled')))
+    return this.ctx.admission.snapshot()
+  }
+
+  /**
+   * Request an operator hold for one live allocated run, cancel its native root, and resolve only after its Session and
+   * Autopilot checkpoint are durable. Queued work must use `Admission.holdQueued`; absent live ownership rejects.
+   */
+  async stopRun(runId: RunId): Promise<PausedActiveRun> {
+    const active = this.active.get(runId)
+    if (active === undefined) throw new Error(`run "${runId}" has no live execution owner`)
+    const requested = await this.ctx.admission.requestRunPause(runId)
+    if (requested.state === 'paused') return requested
+    await this.pauseOwnedExecution(runId, 'operator requested a checkpoint stop')
+    const paused = this.ctx.admission.snapshot().runs.find((run) => run.runId === runId)
+    if (!isPausedActive(paused)) throw new Error(`run "${runId}" did not reach a durable pause checkpoint`)
+    return paused
+  }
+
+  private async pauseOwnedExecution(runId: RunId, reason: string): Promise<void> {
+    const active = this.active.get(runId)
+    if (active === undefined) {
+      const run = currentRun(this.ctx.admission.snapshot(), runId)
+      if (run.state === 'pausing' && run.execution.recovery === undefined) {
+        throw new Error(`run "${runId}" is pausing without a live execution owner`)
+      }
+      return
+    }
+    active.pauseRequested = true
+    active.handle?.agent.cancel({ kind: 'hook', reason }, { keepInbox: true })
+    await active.completion
+    const run = currentRun(this.ctx.admission.snapshot(), runId)
+    if (run.state === 'pausing' && run.execution.recovery === undefined) {
+      throw new Error(`run "${runId}" quiesced without a durable pause checkpoint`)
+    }
+  }
+
+  private async executeClaimed(claimed: ImplementingRun, active: ActiveExecution): Promise<DispatchResult> {
+    let run: ImplementingRun | PausingRun = claimed
 
     const usage: UsageRecorder = { usage: [], requests: 0 }
     const report: ReportRecorder = {}
     let git: GitExecutionSnapshot | undefined
+    let rootQuiescent = false
+    let sessionDurable = false
+    let finalGitObserved = false
     try {
       await mkdir(dirname(run.execution.worktreePath), { recursive: true })
       const baseHead = (
@@ -104,24 +179,37 @@ export class Dispatch extends Service {
           agentCtx.tools.register(createReportTool(report))
         },
       })
+      active.handle = handle
       try {
         await workspace.attachSession(run.execution.sessionId)
-        handle.agent.followup(
-          createUserMessage({
-            content: [{ type: 'text', text: executionPrompt(run) }],
-            source: { kind: 'plugin', plugin: 'dsh-autopilot' },
-          }),
-        )
+        const current = currentRun(this.ctx.admission.snapshot(), run.runId)
+        if (current.state === 'pausing' || active.pauseRequested) {
+          active.pauseRequested = true
+          handle.agent.cancel({ kind: 'hook', reason: 'pause requested before Agent start' }, { keepInbox: true })
+        } else {
+          handle.agent.followup(
+            createUserMessage({
+              content: [{ type: 'text', text: executionPrompt(run) }],
+              source: { kind: 'plugin', plugin: 'dsh-autopilot' },
+            }),
+          )
+        }
         await handle.agent.whenIdle()
+        rootQuiescent = true
         if (!(await this.ctx.sessions.flush(handle.agent.session))) {
           throw new Error(`session "${run.execution.sessionId}" has no persistence binding`)
         }
+        sessionDurable = true
       } finally {
         await handle.dispose()
       }
 
       git = await inspectGit(this.ctx.subprocess, run.execution.worktreePath, baseHead)
-      await this.ctx.admission.recordWorktree(run.runId, git)
+      finalGitObserved = true
+      const recorded = await this.ctx.admission.recordWorktree(run.runId, git)
+      if (recorded.state === 'pausing') {
+        return await this.ctx.admission.checkpointPaused(run.runId, git, usageSettlement(usage))
+      }
       const outcome = validatedOutcome(report, git)
       return await this.ctx.admission.settle(run.runId, outcome, usageSettlement(usage))
     } catch (error) {
@@ -129,10 +217,18 @@ export class Dispatch extends Service {
       if (git !== undefined) {
         try {
           git = await inspectGit(this.ctx.subprocess, run.execution.worktreePath, git.baseHead)
+          finalGitObserved = true
           await this.ctx.admission.recordWorktree(run.runId, git)
         } catch {
           // The original actionable failure remains authoritative; best-effort evidence must not replace it.
         }
+      }
+      const current = currentRun(this.ctx.admission.snapshot(), run.runId)
+      if (current.state === 'pausing') {
+        if (rootQuiescent && sessionDurable && finalGitObserved && git !== undefined) {
+          return await this.ctx.admission.checkpointPaused(run.runId, git, usageSettlement(usage))
+        }
+        throw error
       }
       return await this.ctx.admission.settle(
         run.runId,
@@ -141,6 +237,28 @@ export class Dispatch extends Service {
       )
     }
   }
+}
+
+function activeExecution(): ActiveExecution {
+  let complete: (() => void) | undefined
+  const completion = new Promise<void>((resolve) => {
+    complete = resolve
+  })
+  return {
+    pauseRequested: false,
+    completion,
+    complete: () => complete?.(),
+  }
+}
+
+function currentRun(snapshot: AdmissionSnapshot, runId: RunId): AutopilotRun {
+  const run = snapshot.runs.find((candidate) => candidate.runId === runId)
+  if (run === undefined) throw new Error(`run "${runId}" disappeared from the admission aggregate`)
+  return run
+}
+
+function isPausedActive(run: AutopilotRun | undefined): run is PausedActiveRun {
+  return run?.state === 'paused' && run.pause.kind === 'active'
 }
 
 function createReportTool(recorder: ReportRecorder) {
@@ -195,7 +313,7 @@ function createReportTool(recorder: ReportRecorder) {
   })
 }
 
-function registerUsageRecorder(agentCtx: Context, run: ImplementingRun, recorder: UsageRecorder): void {
+function registerUsageRecorder(agentCtx: Context, run: ImplementingRun | PausingRun, recorder: UsageRecorder): void {
   agentCtx.on('llm/stream', async function* (options: GenerateOptions, next): AsyncIterable<StreamChunk> {
     recorder.requests += 1
     if (
@@ -266,7 +384,7 @@ function validatedOutcome(report: ReportRecorder, git: GitExecutionSnapshot): Ex
   return report.outcome
 }
 
-function executionPrompt(run: ImplementingRun): string {
+function executionPrompt(run: ImplementingRun | PausingRun): string {
   const git = run.execution.git
   if (git === undefined) throw new Error('the managed worktree has no durable Git facts')
   return `Execute the approved Agent Brief below in the managed fixture worktree. Use autopilot_report exactly once with a verified, blocked, or failed outcome before finishing. A verified report must repeat the exact final Git head and porcelain status.\n\nManaged Git head: ${git.head}\nManaged Git status: ${JSON.stringify(git.status)}\n\n${run.brief.content}`

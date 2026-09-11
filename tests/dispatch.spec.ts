@@ -22,7 +22,7 @@ import {
   trackerCommentId,
   trackerIssueId,
 } from '../src/tracker.js'
-import { disposeContext, fixtureExecutionSettings, mountExecutionHostServices } from './dsh-fixtures.js'
+import { Deferred, disposeContext, fixtureExecutionSettings, mountExecutionHostServices } from './dsh-fixtures.js'
 
 const temporaryDirectories: string[] = []
 const contexts: Context[] = []
@@ -234,6 +234,130 @@ async function bootFixture(root: string, adapter: ControlledAdapter): Promise<Co
 }
 
 describe('durable fixture dispatch', () => {
+  it('keeps scheduler-disabled work pausing until the cancellation-resistant root is quiescent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-pause-'))
+    temporaryDirectories.push(root)
+    const requestStarted = new Deferred<void>()
+    const releaseRequest = new Deferred<void>()
+    const ctx = await bootFixture(
+      root,
+      new ControlledAdapter('verified', 'known', 'valid', async () => {
+        requestStarted.resolve()
+        await releaseRequest.promise
+      }),
+    )
+    const dispatched = ctx.dispatch.dispatchNext()
+    await requestStarted.promise
+
+    const disabled = ctx.dispatch.disableScheduler()
+    await expect.poll(() => ctx.admission.snapshot().runs[0]?.state).toBe('pausing')
+    expect(ctx.admission.snapshot()).toMatchObject({
+      scheduler: { mode: 'disabled' },
+      runs: [
+        {
+          state: 'pausing',
+          pause: { reason: 'scheduler', operatorHold: false, continuationTarget: 'implementing' },
+          budget: { reservedTokens: 60 },
+        },
+      ],
+      budget: { reservedTokens: 60 },
+    })
+    expect(ctx.agents.roots()).toHaveLength(1)
+
+    releaseRequest.resolve()
+    const [disabledSnapshot, paused] = await Promise.all([disabled, dispatched])
+
+    expect(disabledSnapshot).toMatchObject({ scheduler: { mode: 'disabled' }, runs: [{ state: 'paused' }] })
+    expect(paused).toMatchObject({
+      state: 'paused',
+      pause: {
+        reason: 'scheduler',
+        operatorHold: false,
+        continuationTarget: 'implementing',
+        lastCompletedPhase: 'agent-quiescent',
+      },
+      execution: { git: { head: expect.stringMatching(/^[a-f0-9]{40}$/) } },
+      budget: {
+        reservedTokens: 60,
+        settledTokens: 0,
+        usageUncertain: true,
+        usageUncertaintyReason: expect.stringMatching(/usage record/),
+      },
+    })
+    if (paused === undefined || paused.state !== 'paused' || paused.pause.kind !== 'active') {
+      throw new Error('expected an allocated pause checkpoint')
+    }
+    await expect(ctx.sessionPersistence.stat(paused.execution.sessionId)).resolves.toMatchObject({
+      header: { id: paused.execution.sessionId },
+    })
+    expect(
+      execFileSync('git', ['status', '--porcelain'], { cwd: paused.execution.worktreePath, encoding: 'utf8' }),
+    ).toBe(paused.execution.git?.status)
+    expect(ctx.agents.roots()).toEqual([])
+  })
+
+  it('persists an operator hold only after an active root reaches its checkpoint', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-stop-'))
+    temporaryDirectories.push(root)
+    const requestStarted = new Deferred<void>()
+    const releaseRequest = new Deferred<void>()
+    const ctx = await bootFixture(
+      root,
+      new ControlledAdapter('verified', 'known', 'valid', async () => {
+        requestStarted.resolve()
+        await releaseRequest.promise
+      }),
+    )
+    const dispatched = ctx.dispatch.dispatchNext()
+    await requestStarted.promise
+    const run = ctx.admission.snapshot().runs[0]
+    if (run?.state !== 'implementing') throw new Error('expected active fixture run')
+
+    const stopped = ctx.dispatch.stopRun(run.runId)
+    await expect.poll(() => ctx.admission.snapshot().runs[0]?.state).toBe('pausing')
+    expect(ctx.admission.snapshot()).toMatchObject({
+      scheduler: { mode: 'enabled' },
+      runs: [{ pause: { reason: 'operator', operatorHold: true } }],
+    })
+
+    releaseRequest.resolve()
+    const [stoppedRun, paused] = await Promise.all([stopped, dispatched])
+    expect(stoppedRun).toEqual(paused)
+    expect(paused).toMatchObject({ state: 'paused', pause: { reason: 'operator', operatorHold: true } })
+  })
+
+  it('lets a pause checkpoint win a race with terminal settlement', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-settle-race-'))
+    temporaryDirectories.push(root)
+    const ctx = await bootFixture(root, new ControlledAdapter())
+    const recordWorktree = ctx.admission.recordWorktree.bind(ctx.admission)
+    let recordCount = 0
+    let disabling: Promise<unknown> | undefined
+    ctx.admission.recordWorktree = async (runId, git) => {
+      const recorded = await recordWorktree(runId, git)
+      recordCount += 1
+      if (recordCount === 2) {
+        disabling = ctx.dispatch.disableScheduler()
+        await expect.poll(() => ctx.admission.snapshot().runs[0]?.state).toBe('pausing')
+      }
+      return recorded
+    }
+
+    const paused = await ctx.dispatch.dispatchNext()
+    await disabling
+
+    expect(paused).toMatchObject({
+      state: 'paused',
+      pause: { reason: 'scheduler', lastCompletedPhase: 'agent-quiescent' },
+      budget: { reservedTokens: 0, settledTokens: 18, usageUncertain: false },
+    })
+    expect(ctx.admission.snapshot()).toMatchObject({
+      scheduler: { mode: 'disabled' },
+      runs: [{ state: 'paused' }],
+      budget: { reservedTokens: 0, settledTokens: 18, usageUncertain: false },
+    })
+  })
+
   it('does not claim or start a queued run while the scheduler is draining', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-draining-'))
     temporaryDirectories.push(root)
@@ -262,7 +386,7 @@ describe('durable fixture dispatch', () => {
 
     const completed = await ctx.dispatch.dispatchNext()
 
-    if (completed === undefined || completed.execution.git === undefined) {
+    if (completed === undefined || completed.state === 'paused' || completed.execution.git === undefined) {
       throw new Error('fixture dispatch did not retain its terminal Git facts')
     }
 
@@ -328,6 +452,7 @@ describe('durable fixture dispatch', () => {
       const completed = await ctx.dispatch.dispatchNext()
 
       expect(completed).toMatchObject({ state: 'failed', outcome: { kind: 'failed' } })
+      if (completed === undefined || completed.state === 'paused') throw new Error('expected a failed terminal run')
       expect(completed?.outcome.summary).toMatch(/did not submit|violated/)
     },
   )
@@ -340,6 +465,7 @@ describe('durable fixture dispatch', () => {
     const completed = await ctx.dispatch.dispatchNext()
 
     expect(completed).toMatchObject({ state: 'publishing', outcome: { kind: 'verified' } })
+    if (completed === undefined || completed.state === 'paused') throw new Error('expected a publishing terminal run')
     expect(new TextEncoder().encode(completed?.outcome.summary).byteLength).toBe(4096)
   })
 
@@ -386,7 +512,7 @@ describe('durable fixture dispatch', () => {
 
     const completed = await ctx.dispatch.dispatchNext()
 
-    if (completed === undefined) throw new Error('expected a terminal fixture run')
+    if (completed === undefined || completed.state === 'paused') throw new Error('expected a terminal fixture run')
     expect(completed).toMatchObject({ state: 'failed', outcome: { kind: 'failed' } })
     expect(new TextEncoder().encode(completed.outcome.evidence[0]).byteLength).toBe(4096)
   })

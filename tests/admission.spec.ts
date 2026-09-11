@@ -276,6 +276,100 @@ describe('admission service seam', () => {
     await expect(ctx.admission.claimNext()).resolves.toBeUndefined()
   })
 
+  it('persists an allocated pause checkpoint and keeps scheduler enablement blocked until quiescence', async () => {
+    const path = await databasePath()
+    const executionSettings = fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees')
+    const first = await boot(path, [candidate()], 20, executionSettings)
+    await first.ctx.admission.reconcile({ source: 'manual' })
+    const claimed = await first.ctx.admission.claimNext()
+    if (claimed === undefined) throw new Error('expected an implementing run')
+
+    const requested = await first.ctx.admission.requestSchedulerDisable()
+    expect(requested).toMatchObject({
+      snapshot: {
+        scheduler: { mode: 'disabled' },
+        runs: [
+          {
+            runId: claimed.runId,
+            state: 'pausing',
+            pause: {
+              kind: 'active',
+              reason: 'scheduler',
+              operatorHold: false,
+              continuationTarget: 'implementing',
+              interruptedOperation: 'agent-turn',
+            },
+            budget: { reservedTokens: 60 },
+          },
+        ],
+      },
+      pausingRunIds: [claimed.runId],
+    })
+    await expect(first.ctx.admission.setSchedulerMode('enabled')).rejects.toThrow(/still pausing/)
+
+    const git = { baseHead: 'a'.repeat(40), head: 'b'.repeat(40), status: ' M retained.txt\n' }
+    const paused = await first.ctx.admission.checkpointPaused(claimed.runId, git, { kind: 'known', tokens: 12 })
+    expect(paused).toMatchObject({
+      runId: claimed.runId,
+      state: 'paused',
+      execution: { sessionId: claimed.execution.sessionId, worktreePath: claimed.execution.worktreePath, git },
+      pause: {
+        kind: 'active',
+        reason: 'scheduler',
+        operatorHold: false,
+        pausedAt: expect.any(String),
+        lastCompletedPhase: 'agent-quiescent',
+      },
+      budget: { reservedTokens: 0, settledTokens: 12, usageUncertain: false },
+    })
+    expect(first.ctx.admission.snapshot().budget).toEqual({
+      reservedTokens: 0,
+      settledTokens: 12,
+      usageUncertain: false,
+    })
+    await disposeTrackedContext(first.ctx)
+
+    const second = await boot(path, [], 20, executionSettings)
+    expect(second.ctx.admission.snapshot()).toMatchObject({
+      scheduler: { mode: 'disabled' },
+      runs: [paused],
+      budget: { reservedTokens: 0, settledTokens: 12, usageUncertain: false },
+    })
+    const held = await second.ctx.admission.requestRunPause(claimed.runId)
+    expect(held).toMatchObject({ state: 'paused', pause: { reason: 'operator', operatorHold: true } })
+  })
+
+  it('keeps a pausing run and its reservation when checkpoint persistence fails', async () => {
+    const path = await databasePath()
+    const { ctx } = await boot(
+      path,
+      [candidate()],
+      20,
+      fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees'),
+    )
+    await ctx.admission.reconcile({ source: 'manual' })
+    const claimed = await ctx.admission.claimNext()
+    if (claimed === undefined) throw new Error('expected an implementing run')
+    await ctx.admission.requestSchedulerDisable()
+    const before = ctx.admission.snapshot()
+    rejectAdmissionUpdates(path)
+
+    await expect(
+      ctx.admission.checkpointPaused(
+        claimed.runId,
+        { baseHead: 'a'.repeat(40), head: 'b'.repeat(40), status: '' },
+        { kind: 'known', tokens: 12 },
+      ),
+    ).rejects.toThrow(/forced durable failure/)
+
+    expect(ctx.admission.snapshot()).toEqual(before)
+    expect(before).toMatchObject({
+      scheduler: { mode: 'disabled' },
+      runs: [{ state: 'pausing', budget: { reservedTokens: 60 } }],
+      budget: { reservedTokens: 60, usageUncertain: false },
+    })
+  })
+
   it('durably holds queued work before allocation and excludes it from claims', async () => {
     const path = await databasePath()
     const executionSettings = fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees')
@@ -291,6 +385,7 @@ describe('admission service seam', () => {
       state: 'paused',
       queueClass: 'resumption',
       pause: {
+        kind: 'queued',
         reason: 'operator',
         operatorHold: true,
         continuationTarget: 'implementing',
@@ -924,13 +1019,13 @@ describe('admission service seam', () => {
     await disposeTrackedContext(ctx)
   })
 
-  it('fails closed when a version-2 durable admission record is reopened', async () => {
+  it('fails closed when a version-3 durable admission record is reopened', async () => {
     const path = await databasePath()
     const first = await boot(path, [candidate()])
     await first.ctx.admission.reconcile({ source: 'startup' })
     await disposeTrackedContext(first.ctx)
     rewriteStoredState(path, (state) => {
-      state.schemaVersion = 2
+      state.schemaVersion = 3
     })
 
     const ctx = trackContext(
@@ -1151,9 +1246,15 @@ describe('admission service seam', () => {
 
     expect(completed).toMatchObject({
       state: 'failed',
-      budget: { reservedTokens: 60, settledTokens: 0, usageUncertain: true },
+      budget: {
+        reservedTokens: 60,
+        settledTokens: 0,
+        usageUncertain: true,
+        usageUncertaintyReason: expect.any(String),
+      },
       outcome: { kind: 'failed', summary: 'Provider token usage could not be settled safely.' },
     })
     expect(new TextEncoder().encode(completed.outcome.evidence[0]).byteLength).toBe(4096)
+    expect(new TextEncoder().encode(completed.budget.usageUncertaintyReason ?? '').byteLength).toBe(4096)
   })
 })

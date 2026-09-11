@@ -94,11 +94,23 @@ export interface PausedQueuedRun extends Omit<QueuedRun, 'state' | 'queueClass'>
   readonly state: 'paused'
   readonly queueClass: 'resumption'
   readonly pause: {
+    readonly kind: 'queued'
     readonly reason: 'operator'
     readonly operatorHold: true
     readonly continuationTarget: 'implementing'
     readonly pausedAt: string
   }
+}
+
+export type ActivePauseReason = 'operator' | 'scheduler'
+
+export interface ActivePauseSnapshot {
+  readonly kind: 'active'
+  readonly reason: ActivePauseReason
+  readonly operatorHold: boolean
+  readonly continuationTarget: 'implementing'
+  readonly requestedAt: string
+  readonly interruptedOperation: 'agent-turn'
 }
 
 export interface RunExecutionSnapshot {
@@ -130,12 +142,26 @@ export interface RunBudgetSnapshot {
   readonly reservedTokens: number
   readonly settledTokens: number
   readonly usageUncertain: boolean
+  readonly usageUncertaintyReason?: string | undefined
 }
 
 export interface ImplementingRun extends Omit<QueuedRun, 'state'> {
   readonly state: 'implementing'
   readonly execution: RunExecutionSnapshot
   readonly budget: RunBudgetSnapshot
+}
+
+export interface PausingRun extends Omit<ImplementingRun, 'state'> {
+  readonly state: 'pausing'
+  readonly pause: ActivePauseSnapshot
+}
+
+export interface PausedActiveRun extends Omit<ImplementingRun, 'state'> {
+  readonly state: 'paused'
+  readonly pause: ActivePauseSnapshot & {
+    readonly pausedAt: string
+    readonly lastCompletedPhase: 'agent-quiescent'
+  }
 }
 
 export type ExecutionOutcome =
@@ -156,7 +182,7 @@ export interface TerminalRun extends Omit<QueuedRun, 'state'> {
   readonly completedAt: string
 }
 
-export type AutopilotRun = QueuedRun | PausedQueuedRun | ImplementingRun | TerminalRun
+export type AutopilotRun = QueuedRun | PausedQueuedRun | ImplementingRun | PausingRun | PausedActiveRun | TerminalRun
 
 export type RunUsageSettlement =
   | { readonly kind: 'known'; readonly tokens: number }
@@ -178,6 +204,11 @@ export interface AdmissionSnapshot {
 
 export interface ReconcileResult extends AdmissionSnapshot {
   decisions: readonly AdmissionDecision[]
+}
+
+export interface SchedulerDisableResult {
+  readonly snapshot: AdmissionSnapshot
+  readonly pausingRunIds: readonly RunId[]
 }
 
 interface AdmissionSettings {
@@ -270,6 +301,7 @@ const runBudgetSchema = z.object({
   reservedTokens: z.number().int().nonnegative(),
   settledTokens: z.number().int().nonnegative(),
   usageUncertain: z.boolean(),
+  usageUncertaintyReason: boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'usage uncertainty reason').optional(),
 })
 
 const outcomeBaseSchema = z.object({
@@ -293,6 +325,7 @@ const pausedQueuedRunSchema = runBaseSchema.extend({
   state: z.literal('paused'),
   queueClass: z.literal('resumption'),
   pause: z.object({
+    kind: z.literal('queued'),
     reason: z.literal('operator'),
     operatorHold: z.literal(true),
     continuationTarget: z.literal('implementing'),
@@ -304,6 +337,34 @@ const implementingRunSchema = runBaseSchema.extend({
   execution: executionSchema,
   budget: runBudgetSchema,
 })
+const activePauseSchema = z.object({
+  kind: z.literal('active'),
+  reason: z.enum(['operator', 'scheduler']),
+  operatorHold: z.boolean(),
+  continuationTarget: z.literal('implementing'),
+  requestedAt: z.iso.datetime({ offset: true }),
+  pausedAt: z.iso.datetime({ offset: true }).optional(),
+  lastCompletedPhase: z.literal('agent-quiescent').optional(),
+  interruptedOperation: z.literal('agent-turn'),
+})
+const pausingRunSchema = runBaseSchema.extend({
+  state: z.literal('pausing'),
+  execution: executionSchema,
+  budget: runBudgetSchema,
+  pause: activePauseSchema.extend({
+    pausedAt: z.undefined().optional(),
+    lastCompletedPhase: z.undefined().optional(),
+  }),
+})
+const pausedActiveRunSchema = runBaseSchema.extend({
+  state: z.literal('paused'),
+  execution: executionSchema,
+  budget: runBudgetSchema,
+  pause: activePauseSchema.extend({
+    pausedAt: z.iso.datetime({ offset: true }),
+    lastCompletedPhase: z.literal('agent-quiescent'),
+  }),
+})
 const terminalRunSchema = runBaseSchema.extend({
   state: z.enum(['publishing', 'blocked', 'failed']),
   execution: executionSchema,
@@ -311,10 +372,12 @@ const terminalRunSchema = runBaseSchema.extend({
   outcome: outcomeSchema,
   completedAt: z.iso.datetime({ offset: true }),
 })
-const runSchema = z.discriminatedUnion('state', [
+const runSchema = z.union([
   queuedRunSchema,
   pausedQueuedRunSchema,
   implementingRunSchema,
+  pausingRunSchema,
+  pausedActiveRunSchema,
   terminalRunSchema,
 ])
 const schedulerModeSchema = z.enum(['enabled', 'draining', 'disabled'])
@@ -325,7 +388,7 @@ const schedulerSchema = z.object({
 
 const stateSchema = z
   .object({
-    schemaVersion: z.literal(3),
+    schemaVersion: z.literal(4),
     revision: z.number().int().nonnegative(),
     nextSequence: z.number().int().positive(),
     runs: z.array(runSchema).max(100),
@@ -363,28 +426,38 @@ const stateSchema = z
       addIntegrityIssue('next queue sequence must follow every retained run')
     }
     const runReservations = value.runs.reduce(
-      (total, run) => total + (run.state === 'queued' || run.state === 'paused' ? 0 : run.budget.reservedTokens),
+      (total, run) => total + ('budget' in run ? run.budget.reservedTokens : 0),
       0,
     )
     if (runReservations !== value.budget.reservedTokens) {
       addIntegrityIssue('deployment reservation must equal active run reservations')
     }
     const runSettlements = value.runs.reduce(
-      (total, run) => total + (run.state === 'queued' || run.state === 'paused' ? 0 : run.budget.settledTokens),
+      (total, run) => total + ('budget' in run ? run.budget.settledTokens : 0),
       0,
     )
     if (runSettlements !== value.budget.settledTokens) {
       addIntegrityIssue('deployment settlement must equal retained run settlements')
     }
-    const uncertain = value.runs.some(
-      (run) => run.state !== 'queued' && run.state !== 'paused' && run.budget.usageUncertain,
-    )
+    const uncertain = value.runs.some((run) => 'budget' in run && run.budget.usageUncertain)
     if (uncertain !== value.budget.usageUncertain) {
       addIntegrityIssue('deployment usage uncertainty must match retained run uncertainty')
     }
     for (const run of value.runs) {
-      if (run.state === 'implementing' && (run.budget.settledTokens !== 0 || run.budget.usageUncertain)) {
-        addIntegrityIssue('implementing runs cannot carry settled or uncertain usage')
+      if ('budget' in run && run.budget.usageUncertain !== (run.budget.usageUncertaintyReason !== undefined)) {
+        addIntegrityIssue('run usage uncertainty must retain exactly one actionable reason')
+      }
+      if (
+        (run.state === 'pausing' || isPausedActiveRun(run)) &&
+        run.pause.operatorHold !== (run.pause.reason === 'operator')
+      ) {
+        addIntegrityIssue('active operator pause reason and hold must agree')
+      }
+      if (
+        (run.state === 'implementing' || run.state === 'pausing') &&
+        (run.budget.settledTokens !== 0 || run.budget.usageUncertain)
+      ) {
+        addIntegrityIssue('active runs cannot carry settled or uncertain usage')
       }
       if (run.state === 'publishing' && run.outcome.kind !== 'verified') {
         addIntegrityIssue('publishing runs require a verified outcome')
@@ -402,7 +475,7 @@ type AdmissionState = z.infer<typeof stateSchema>
 
 const admissionDomainSpec = defineDomain({
   name: 'autopilot_admission',
-  version: 3,
+  version: 4,
   tables: {
     state: domainTable<typeof STATE_KEY, AdmissionState>(stateSchema),
   },
@@ -415,7 +488,7 @@ interface EligibleIssue {
 
 function initialState(): AdmissionState {
   return {
-    schemaVersion: 3,
+    schemaVersion: 4,
     revision: 0,
     nextSequence: 1,
     runs: [],
@@ -487,6 +560,9 @@ export class Admission extends Service {
       if (parsedMode === 'disabled' && current.runs.some((run) => run.state === 'implementing')) {
         throw new Error('scheduler cannot be disabled while an implementing run exists')
       }
+      if (parsedMode === 'enabled' && current.runs.some((run) => run.state === 'pausing')) {
+        throw new Error('scheduler cannot be enabled while a run is still pausing')
+      }
       if (current.scheduler.mode === parsedMode) return current
       const next = structuredClone(current)
       next.scheduler = { mode: parsedMode, changedAt: new Date().toISOString() }
@@ -494,6 +570,124 @@ export class Admission extends Service {
       return stateSchema.parse(next)
     })
     return snapshotOf(committed)
+  }
+
+  /**
+   * Atomically disable admission/dequeue and move every implementing run to `pausing`. The returned run ids identify
+   * live executions whose owner must request cancellation and checkpoint only after quiescence. Existing pause requests
+   * retain their operator-hold intent. Durable-write failure leaves both scheduler and runs unchanged. This operation
+   * requests lifecycle work but does not itself own or cancel an Agent.
+   */
+  async requestSchedulerDisable(): Promise<SchedulerDisableResult> {
+    let pausingRunIds: RunId[] = []
+    const committed = await this.currentTable().update(STATE_KEY, (current) => {
+      const requestedAt = new Date().toISOString()
+      const next = structuredClone(current)
+      next.scheduler = { mode: 'disabled', changedAt: requestedAt }
+      next.runs = next.runs.map((run) =>
+        run.state === 'implementing'
+          ? {
+              ...run,
+              state: 'pausing' as const,
+              pause: activePause('scheduler', requestedAt),
+            }
+          : run,
+      )
+      pausingRunIds = next.runs.filter((run): run is PausingRun => run.state === 'pausing').map((run) => run.runId)
+      if (current.scheduler.mode === 'disabled' && !current.runs.some((run) => run.state === 'implementing')) {
+        return current
+      }
+      next.revision += 1
+      return stateSchema.parse(next)
+    })
+    return { snapshot: snapshotOf(committed), pausingRunIds: [...pausingRunIds] }
+  }
+
+  /**
+   * Atomically request an operator pause for one allocated run. An implementing run becomes `pausing`; an existing
+   * scheduler pause is upgraded to an operator hold without losing its original checkpoint facts. Queued runs use
+   * `holdQueued` instead. The request owns no Agent cancellation and accepts no caller cancellation signal.
+   */
+  async requestRunPause(runId: RunId): Promise<PausingRun | PausedActiveRun> {
+    const parsedRunId = runIdSchema.parse(runId)
+    let requested: PausingRun | PausedActiveRun | undefined
+    await this.currentTable().update(STATE_KEY, (current) => {
+      const index = current.runs.findIndex((run) => run.runId === parsedRunId)
+      const run = current.runs[index]
+      if (run === undefined) throw new Error(`run "${parsedRunId}" does not exist`)
+      if (isPausedActiveRun(run) && run.pause.operatorHold) {
+        requested = structuredClone(run)
+        return current
+      }
+
+      const next = structuredClone(current)
+      let nextRun: PausingRun | PausedActiveRun
+      if (run.state === 'implementing') {
+        nextRun = { ...run, state: 'pausing', pause: activePause('operator', new Date().toISOString()) }
+      } else if (run.state === 'pausing') {
+        nextRun = {
+          ...run,
+          pause: { ...run.pause, reason: 'operator', operatorHold: true },
+        }
+      } else if (isPausedActiveRun(run)) {
+        nextRun = {
+          ...run,
+          pause: { ...run.pause, reason: 'operator', operatorHold: true },
+        }
+      } else {
+        throw new Error(`run "${parsedRunId}" is not an allocated active or paused run`)
+      }
+      requested = nextRun
+      next.runs[index] = nextRun
+      next.revision += 1
+      return stateSchema.parse(next)
+    })
+    if (requested === undefined) throw new Error(`run "${parsedRunId}" pause was not requested`)
+    return structuredClone(requested)
+  }
+
+  /**
+   * Commit a pause only after the execution owner has proven its root idle, flushed the Session, and inspected Git.
+   * Known usage releases the reservation and advances settled usage. Missing, malformed, or excessive usage retains the
+   * reservation and marks deployment usage uncertain for later reconciliation. A lost pause race or write failure leaves
+   * the `pausing` checkpoint unchanged. The method accepts no caller cancellation signal.
+   */
+  async checkpointPaused(runId: RunId, git: GitExecutionSnapshot, usage: RunUsageSettlement): Promise<PausedActiveRun> {
+    const parsedRunId = runIdSchema.parse(runId)
+    const parsedGit = executionSchema.shape.git.unwrap().parse(git)
+    let paused: PausedActiveRun | undefined
+    await this.currentTable().update(STATE_KEY, (current) => {
+      const next = structuredClone(current)
+      const index = next.runs.findIndex((run) => run.runId === parsedRunId)
+      const run = next.runs[index]
+      if (run?.state !== 'pausing') throw new Error(`run "${parsedRunId}" is not pausing`)
+      const usageKnown = validUsageSettlement(run, usage)
+      const pausedAt = new Date().toISOString()
+      paused = {
+        ...run,
+        state: 'paused',
+        execution: { ...run.execution, git: parsedGit },
+        budget: {
+          ...run.budget,
+          reservedTokens: usageKnown ? 0 : run.budget.reservedTokens,
+          settledTokens: usageKnown ? usage.tokens : 0,
+          usageUncertain: !usageKnown,
+          ...(usageKnown ? {} : { usageUncertaintyReason: usageUncertaintyReason(run, usage) }),
+        },
+        pause: { ...run.pause, pausedAt, lastCompletedPhase: 'agent-quiescent' },
+      }
+      next.runs[index] = paused
+      if (usageKnown) {
+        next.budget.reservedTokens -= run.budget.reservedTokens
+        next.budget.settledTokens += usage.tokens
+      } else {
+        next.budget.usageUncertain = true
+      }
+      next.revision += 1
+      return stateSchema.parse(next)
+    })
+    if (paused === undefined) throw new Error(`run "${parsedRunId}" pause checkpoint was not recorded`)
+    return structuredClone(paused)
   }
 
   /**
@@ -515,6 +709,7 @@ export class Admission extends Service {
         state: 'paused',
         queueClass: 'resumption',
         pause: {
+          kind: 'queued',
           reason: 'operator',
           operatorHold: true,
           continuationTarget: 'implementing',
@@ -550,7 +745,7 @@ export class Admission extends Service {
     }
     const retained = beforeRead.runs.find((run) => run.runId === parsedRunId)
     if (retained === undefined) throw new Error(`run "${parsedRunId}" does not exist`)
-    if (retained.state !== 'paused' || !retained.pause.operatorHold) {
+    if (!isPausedQueuedRun(retained) || !retained.pause.operatorHold) {
       throw new Error(`run "${parsedRunId}" is not paused on an operator hold`)
     }
     if (retained.providerId !== providerId) {
@@ -595,7 +790,7 @@ export class Admission extends Service {
         }
         const index = current.runs.findIndex((run) => run.runId === parsedRunId)
         const run = current.runs[index]
-        if (run?.state !== 'paused' || !run.pause.operatorHold) {
+        if (!isPausedQueuedRun(run) || !run.pause.operatorHold) {
           throw new Error(`run "${parsedRunId}" is not paused on an operator hold`)
         }
         if (!sameRetainedRun(run, retained) || !matchesRetainedIssue(run, providerId, currentEvaluation)) {
@@ -664,20 +859,25 @@ export class Admission extends Service {
   }
 
   /**
-   * Persist exact Git facts for an implementing run before Agent creation and again after execution.
-   * The run must exist, still be implementing, and not require recovery. Invalid evidence or durable-write failure
+   * Persist exact Git facts for an implementing or pausing run before Agent creation and again after execution.
+   * The run must exist, remain allocated, and not require recovery. Invalid evidence or durable-write failure
    * rejects without changing the prior snapshot. The atomic record update accepts no cancellation signal.
    */
-  async recordWorktree(runId: RunId, git: GitExecutionSnapshot): Promise<ImplementingRun> {
+  async recordWorktree(runId: RunId, git: GitExecutionSnapshot): Promise<ImplementingRun | PausingRun> {
     const parsedGit = executionSchema.shape.git.unwrap().parse(git)
-    let recorded: ImplementingRun | undefined
+    let recorded: ImplementingRun | PausingRun | undefined
     await this.currentTable().update(STATE_KEY, (current) => {
       const next = structuredClone(current)
       const index = next.runs.findIndex((run) => run.runId === runId)
       const run = next.runs[index]
-      if (run?.state !== 'implementing') throw new Error(`run "${runId}" is not implementing`)
+      if (run?.state !== 'implementing' && run?.state !== 'pausing') {
+        throw new Error(`run "${runId}" is not implementing or pausing`)
+      }
       if (run.execution.recovery !== undefined) throw new Error(`run "${runId}" requires explicit recovery`)
-      const nextRun: ImplementingRun = { ...run, execution: { ...run.execution, git: parsedGit } }
+      const nextRun: ImplementingRun | PausingRun = {
+        ...run,
+        execution: { ...run.execution, git: parsedGit },
+      }
       recorded = nextRun
       next.runs[index] = nextRun
       next.revision += 1
@@ -705,12 +905,7 @@ export class Admission extends Service {
       if (run.execution.git === undefined && parsedOutcome.kind === 'verified') {
         throw new Error(`verified run "${runId}" has no recorded worktree facts`)
       }
-      const usageKnown =
-        usage.kind === 'known' &&
-        Number.isSafeInteger(usage.tokens) &&
-        usage.tokens >= 0 &&
-        usage.tokens <= run.budget.reservedTokens &&
-        usage.tokens <= run.budget.capTokens
+      const usageKnown = validUsageSettlement(run, usage)
       const reservedTokens = usageKnown ? 0 : run.budget.reservedTokens
       const settledTokens = usageKnown ? usage.tokens : 0
       const terminalOutcome: ExecutionOutcome = usageKnown
@@ -734,6 +929,7 @@ export class Admission extends Service {
           reservedTokens,
           settledTokens,
           usageUncertain: !usageKnown,
+          ...(usageKnown ? {} : { usageUncertaintyReason: usageUncertaintyReason(run, usage) }),
         },
         outcome: terminalOutcome,
         completedAt: new Date().toISOString(),
@@ -898,13 +1094,17 @@ export class Admission extends Service {
 
   private async markInterruptedRunsForRecovery(): Promise<void> {
     await this.currentTable().update(STATE_KEY, (current) => {
-      if (!current.runs.some((run) => run.state === 'implementing' && run.execution.recovery === undefined)) {
+      if (
+        !current.runs.some(
+          (run) => (run.state === 'implementing' || run.state === 'pausing') && run.execution.recovery === undefined,
+        )
+      ) {
         return current
       }
       const interruptedAt = new Date().toISOString()
       const next = structuredClone(current)
       next.runs = next.runs.map((run) =>
-        run.state === 'implementing' && run.execution.recovery === undefined
+        (run.state === 'implementing' || run.state === 'pausing') && run.execution.recovery === undefined
           ? {
               ...run,
               execution: {
@@ -918,6 +1118,44 @@ export class Admission extends Service {
       return stateSchema.parse(next)
     })
   }
+}
+
+function activePause(reason: ActivePauseReason, requestedAt: string): ActivePauseSnapshot {
+  return {
+    kind: 'active',
+    reason,
+    operatorHold: reason === 'operator',
+    continuationTarget: 'implementing',
+    requestedAt,
+    interruptedOperation: 'agent-turn',
+  }
+}
+
+function isPausedActiveRun(run: AutopilotRun): run is PausedActiveRun {
+  return run.state === 'paused' && run.pause.kind === 'active'
+}
+
+function isPausedQueuedRun(run: AutopilotRun | undefined): run is PausedQueuedRun {
+  return run?.state === 'paused' && run.pause.kind === 'queued'
+}
+
+function validUsageSettlement(
+  run: ImplementingRun | PausingRun,
+  usage: RunUsageSettlement,
+): usage is Extract<RunUsageSettlement, { kind: 'known' }> {
+  return (
+    usage.kind === 'known' &&
+    Number.isSafeInteger(usage.tokens) &&
+    usage.tokens >= 0 &&
+    usage.tokens <= run.budget.reservedTokens &&
+    usage.tokens <= run.budget.capTokens
+  )
+}
+
+function usageUncertaintyReason(run: ImplementingRun | PausingRun, usage: RunUsageSettlement): string {
+  return usage.kind === 'uncertain'
+    ? truncateUtf8(usage.reason, MAX_OUTCOME_TEXT_BYTES) || 'provider did not supply a usage uncertainty reason'
+    : `reported usage exceeded the reserved allowance of ${String(run.budget.reservedTokens)} tokens`
 }
 
 function evaluateIssue(
@@ -1041,7 +1279,7 @@ function compareSnapshotRuns(left: AutopilotRun, right: AutopilotRun): number {
 }
 
 function snapshotGroup(run: AutopilotRun): number {
-  if (run.state === 'implementing') return 0
+  if (run.state === 'implementing' || run.state === 'pausing') return 0
   if (run.state === 'queued') return queueClassRank(run.queueClass) + 1
   return 3
 }
