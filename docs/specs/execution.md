@@ -44,13 +44,13 @@ These are required data exchanges, not proposed public DSH method names. Keep ac
 
 A turn ending normally is insufficient proof of verified work. Missing or malformed outcome data requires explicit handling; never turn arbitrary final prose into a success flag. Revalidate that the published code matches the verified state, including untracked files and final commit state.
 
-## Target repository and AIDLC context
+## Target repository and Autopilot context
 
 Compose the existing repository-instruction loader and configured skill catalog/loading tools in the run's DSH preset. The run agent reads the target repository's instructions and selects appropriate checks. Autopilot does not store a project-wide substitute list of lint/test commands or implement another skill parser, catalog, discovery system or installation manager. An explicit repository skip or exception can be reported with its evidence; an unexplained failed required check cannot become verified success.
 
 Supply the approved Agent Brief as the execution scope. Supporting comments are context and human answers, not unrestricted instructions to change scheduling, credentials or publication policy. Keep all model-visible injected material reconstructable in the DSH Session through supported logging.
 
-Use the useful AIDLC handoff pattern: approved brief, bounded execution, evidence-based verification, structured blocker questions, and human readiness after clarification. Avoid depending on a developer's private skill path; any packaged skills must be redistributable and their inputs documented.
+Use the Autopilot handoff pattern: approved brief, bounded execution, evidence-based verification, structured blocker questions, and human readiness after clarification. Avoid depending on a developer's private skill path; any packaged skills must be redistributable and their inputs documented.
 
 The `ask-matt` flow informs this handoff: self-contained implementation work, explicit blocking dependencies, and review against both repository standards and the approved scope. Adapt tracker interactions to the selected provider’s comments and dependency links. It is a process reference, not a runtime dependency or permission to impose its TDD/skill stack on every target repository. Autopilot does not generate a parallel code-host issue backlog.
 

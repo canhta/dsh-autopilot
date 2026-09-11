@@ -2,7 +2,7 @@
 
 ## Product
 
-Autopilot coordinates tracker-approved development work through DSH and hands it off as a code host pull request. AIDLC requirements and execution instructions come from the Agent Brief, configured DSH skills/preset, and target repository. Autopilot coordinates their execution and human feedback.
+Autopilot coordinates tracker-approved development work through DSH and hands it off as a code host pull request. Ticket requirements and execution instructions come from the Agent Brief, configured DSH skills/preset, and target repository. Autopilot coordinates their execution and human feedback.
 
 V1 selects one tracker provider and one code-host provider for one project scope on one VPS with one active orchestrator. Multiple runs may execute concurrently within configured limits. One authenticated operator role can view, operate, and configure the system. The Web panel is part of DSH Web; unattended work continues when browsers are closed.
 

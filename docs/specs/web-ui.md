@@ -2,7 +2,7 @@
 
 ## Placement and data
 
-Add `AIDLC Operations` as a global DSH Web sidebar entry. The panel works without selecting a conversation. Settings are a separate DSH Settings contribution; link to them from Operations rather than building two configuration editors.
+Add `Autopilot Operations` as a global DSH Web sidebar entry. The panel works without selecting a conversation. Settings are a separate DSH Settings contribution; link to them from Operations rather than building two configuration editors.
 
 The default view is Queue & Runs, not a metrics dashboard. Use five local tabs: Queue & Runs, Schedule, Budget, Notifications, Worktrees. Keep provider and policy editing in DSH Settings. Do not add a second app-wide sidebar. [UI components](ui-components.md) owns the exact module/component responsibilities and query/command behavior.
 
@@ -23,7 +23,7 @@ At wide desktop widths, selecting a run opens a nonmodal detail region beside th
 ```text
 DSH shell / existing navigation
 ┌─────────────────────────────────────────────────────────────────┐
-│ AIDLC Operations · project/provider        Running  [Pause]  ⋯   │
+│ Autopilot Operations · project/provider    Running  [Pause]  ⋯   │
 │ Conditional attention: one blocker / access issue → action       │
 │ Queue & Runs | Schedule | Budget | Notifications | Worktrees      │
 ├───────────────────────────────────────┬─────────────────────────┤

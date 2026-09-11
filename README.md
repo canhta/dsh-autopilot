@@ -49,7 +49,7 @@ Autopilot selects tickets with the configured ready label and approved Agent Bri
 
 See [run lifecycle](docs/specs/lifecycle.md) for exact pause, recovery and publication rules.
 
-This is an issue-driven AI Development Lifecycle (AIDLC) flow for **one project on one VPS**. Autopilot adds coordination to DSH; it does not replace the harness's agent runtime, tools or Web application. See [product responsibilities](docs/specs/scope.md) for the precise division of ownership.
+This is an issue-driven Autopilot flow for **one project on one VPS**. Autopilot adds coordination to DSH; it does not replace the harness's agent runtime, tools or Web application. See [product responsibilities](docs/specs/scope.md) for the precise division of ownership.
 
 ## Current implementation
 
