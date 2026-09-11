@@ -3,3 +3,5 @@
       name: dsh-autopilot
     - id: autopilot-jira
       name: dsh-autopilot/jira
+    - id: autopilot-github-issues
+      name: dsh-autopilot/github-issues

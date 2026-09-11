@@ -2,13 +2,17 @@
 
 ## Tracker input and human decisions
 
-Read only the configured project's candidates and their required context: stable issue identity, display key, summary, priority, labels, status, comments, dependency links and revision/change history needed for admission. Resolve edition/authentication through the provider connection issue on GitHub.
+Read only the configured project's candidates and their required context: stable issue identity, display key, summary, priority, labels, status, comments, dependency links and revision/change history needed for admission. Outbound tracker access goes through the configured official MCP deployment; that deployment owns its OAuth, app, PAT or API-token authentication and transport. Autopilot settings name the MCP namespace and domain mappings, never a second outbound credential.
 
 Receive authenticated tracker webhooks and run scheduled/startup reconciliation. Verify authenticity using the supported mechanism for the configured webhook type. Persist enough ingress information before acknowledging acceptance; fetch current tracker state instead of trusting an old event snapshot. Filter project/label locally as needed when webhook subscription filters cannot express the rule.
 
 Use existing DSH Host routing and suitable ingress adapters; [platform research](../research/dsh-platform.md#timing-ingress-and-git) identifies what they do and do not guarantee. Provider-specific verification and Autopilot admission durability remain required; do not create an independent HTTP server merely to receive events.
 
-Treat provider-qualified tracker delivery IDs as ingress retry identifiers, not complete run uniqueness keys. Use the shared [admission policy](lifecycle.md) for all sources. Paginate searches/comments and handle rate limiting. A tracker update timestamp alone cannot prove a human readiness transition. Normalize vendor-specific facts through the selected provider; never call Jira or Linear SDKs from core admission.
+Treat provider-qualified tracker delivery IDs as ingress retry identifiers, not complete run uniqueness keys. Use the shared [admission policy](lifecycle.md) for all sources. Invoke only the exact tools declared by the selected provider, bound to one live DSH tool generation; never ask a model or discovery tool to choose admission operations. Paginate candidates and nested evidence under byte/page/item bounds. A tracker update timestamp alone cannot prove a human readiness transition. Normalize vendor-specific facts through the selected provider; never call MCP tools or vendor clients from core admission.
+
+GitHub and Jira must satisfy the exact same-namespace toolsets owned by [provider architecture](providers.md). A missing readiness, dependency or changelog capability makes the provider unavailable; there is no REST/PAT fallback. A schema change or DSH `tools/change` withdraws the current provider generation before later reconciliation may remount it.
+
+The DSH ToolRuntime must expose Host root calls in global `native` or `both` mode. PTC-only accepts only `run_code` at the root and is therefore not a supported tracker deployment until DSH provides a trusted Host-programmatic call path.
 
 ## Agent Brief convention
 
@@ -52,7 +56,7 @@ Persist the intended repository, base, head branch and run identifier before pus
 
 After ambiguous responses or a crash, query the configured repository and head branch/run marker before retrying creation. A found PR must match the intended repository/base/head association. Persist its identity and URL, then invoke the [completion transition](lifecycle.md). An existing unrelated or closed PR is a conflict to resolve, not permission to silently reuse it or open duplicates.
 
-Prefer an existing maintained code host client or supported integration. Credentials stay on the Host with only the required repository permissions. GitHub and Bitbucket are independent implementations of the shared code-host service; issue links do not determine the code-host provider. Missing repository access or branch protection rejection is a publication error, not an invitation to weaken code host settings.
+Prefer official MCP-backed code-host adapters where their live contracts pass conformance. The official MCP deployment owns its credentials with only the required repository permissions. GitHub and Bitbucket remain independent implementations of the shared code-host interface even when Bitbucket uses the same Atlassian MCP identity as Jira; issue links do not determine the code-host provider. Missing repository access or branch protection rejection is a publication error, not an invitation to weaken code-host settings.
 
 Code-host CI repair/review/merge are outside v1 execution. Maintenance may read current PR disposition solely for [cleanup eligibility](operations.md).
 
@@ -68,7 +72,7 @@ Delivery is at least once across uncertain external acknowledgements. Reuse stab
 
 ## Provider evidence
 
-Jira Cloud currently informs the Jira provider; resolve other Jira editions through the provider connection issue. [Linear](../research/linear.md) and [Bitbucket](../research/bitbucket.md) own their source findings and provider-specific tests. Shared conformance and extension requirements belong to [provider architecture](providers.md). A provider must preserve all shared behavior, not merely expose create-comment/create-PR endpoints.
+Jira Cloud currently informs the Jira provider; resolve other Jira editions through the provider connection issue. [Tracker MCP](../research/tracker-mcp.md), [GitHub Issues](../research/github-issues.md), [Linear](../research/linear.md) and [Bitbucket](../research/bitbucket.md) own source findings and limitations. Shared conformance and extension requirements belong to [provider architecture](providers.md). A provider must preserve all shared behavior, not merely expose a vendor tool with a similar name.
 
 ## Acceptance scenarios and references
 
@@ -80,6 +84,6 @@ Jira Cloud currently informs the Jira provider; resolve other Jira editions thro
 - Restart with pending notifications preserves deliveries and stable event IDs.
 - Tests inspect redacted payloads; credentials and full webhook tokens never appear in logs or browser responses.
 
-Primary sources: [Jira Cloud REST](https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/), [Jira webhooks](https://developer.atlassian.com/cloud/jira/platform/webhooks/), [GitHub PR creation](https://docs.github.com/en/rest/pulls/pulls#create-a-pull-request), [ntfy publishing](https://docs.ntfy.sh/publish/).
+Primary sources: [Atlassian MCP supported tools](https://support.atlassian.com/atlassian-ai-gateway/docs/supported-tools/), [GitHub MCP server](https://github.com/github/github-mcp-server), [Jira webhooks](https://developer.atlassian.com/cloud/jira/platform/webhooks/), [GitHub webhook validation](https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries), [ntfy publishing](https://docs.ntfy.sh/publish/).
 
 Community reference: [dsh-notify-center](https://github.com/SingleOne/dsh-notify-center) for event filters and redacted settings. Its documented memory-only queue does not meet Autopilot's persistence requirement.

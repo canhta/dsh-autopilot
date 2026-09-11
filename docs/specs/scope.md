@@ -10,7 +10,7 @@ V1 selects one tracker provider and one code-host provider for one project scope
 
 | System | Authoritative information and behavior | Autopilot relationship |
 | --- | --- | --- |
-| Issue tracker (Jira or Linear) | Requirements, Agent Brief comments, priority, dependency links, human readiness/unblock decisions, issue status | Read selected issues; apply configured labels/status transitions and append execution reports |
+| Issue tracker (Jira, GitHub Issues or Linear) | Requirements, Agent Brief comments, priority, dependency links, human readiness/unblock decisions, issue status | Read selected issues; apply configured labels/status transitions and append execution reports |
 | Target repository | Source, AGENTS.md and applicable instructions, skills, build/test commands, contribution conventions | Supply its workspace to DSH; preserve its rules |
 | Git local | Worktree registration, branches, commits, working changes, tracking state | Manage only worktrees allocated to Autopilot runs; query Git before maintenance |
 | Code host (GitHub or Bitbucket) | Remote branches, PR identity, review, CI, merge/closure state | Publish completed work; hand review to humans; inspect PR disposition when evaluating cleanup |
@@ -24,7 +24,7 @@ The DSH agent determines code changes and verification using target-repo rules. 
 
 Publication and tracker lifecycle writes have one designated execution path controlled by Autopilot. Select the concrete publication executor through the implementation issue on GitHub. Avoid duplicate publication by both an unconstrained agent and a Host publisher.
 
-Provider interfaces, selection and extension are owned by [provider architecture](providers.md). All four tracker/code-host combinations are in the implementation scope; provider selection does not add multi-project administration.
+Provider interfaces, selection and extension are owned by [provider architecture](providers.md). Supported tracker and code-host providers compose independently; provider selection does not add multi-project administration.
 
 Tracker intent, plugin run state, DSH execution state, and code host PR state are distinct. For example, a completed Autopilot run may have a tracker ticket still In Review and a PR still open.
 

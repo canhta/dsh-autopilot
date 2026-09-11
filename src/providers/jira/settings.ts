@@ -3,16 +3,15 @@ import s from '@deepseek-ai/schemastery'
 import { TrackerProviderError } from '../../tracker.js'
 
 export interface JiraSettings {
-  siteUrl: string
+  mcpServerName: string
   cloudId: string
-  projectKey: string
-  email: string
+  projectId: string
   integrationAccountId: string
-  credentialRef: string
   webhookSecretRef: string
   readyLabel: string
   pageSize: number
-  requestTimeoutMs: number
+  maxPagesPerTraversal: number
+  maxItemsPerTraversal: number
   priorityRanks: Record<string, number>
   doneStatusIds: string[]
   blockingLinkTypeIds: string[]
@@ -22,16 +21,15 @@ export interface JiraSettings {
 }
 
 export const jiraSettingsSchema: s<JiraSettings> = s.object({
-  siteUrl: s.string().default(''),
+  mcpServerName: s.string().default('atlassian'),
   cloudId: s.string().default(''),
-  projectKey: s.string().default(''),
-  email: s.string().default(''),
+  projectId: s.string().default(''),
   integrationAccountId: s.string().default(''),
-  credentialRef: s.string().default('DSH_AUTOPILOT_JIRA_TOKEN'),
   webhookSecretRef: s.string().default('DSH_AUTOPILOT_JIRA_WEBHOOK_SECRET'),
   readyLabel: s.string().default('ready-for-agent'),
   pageSize: s.number().min(1).max(100).default(50),
-  requestTimeoutMs: s.number().min(100).max(120_000).default(10_000),
+  maxPagesPerTraversal: s.number().min(1).max(1_000).default(100),
+  maxItemsPerTraversal: s.number().min(1).max(10_000).default(10_000),
   priorityRanks: s.dict(s.number().min(0)).default({}),
   doneStatusIds: s.array(s.string()).default([]),
   blockingLinkTypeIds: s.array(s.string()).default([]),
@@ -41,12 +39,24 @@ export const jiraSettingsSchema: s<JiraSettings> = s.object({
 })
 
 export function validateStoredSettings(config: JiraSettings): void {
-  if (!Number.isInteger(config.pageSize)) throw new TypeError('Jira page size must be an integer')
-  if (!Number.isInteger(config.requestTimeoutMs)) throw new TypeError('Jira request timeout must be an integer')
-  if (config.siteUrl.length > 2048) throw new TypeError('Jira site URL is too long')
-  if (config.email !== '' && (config.email.length > 254 || !/^[^@\s]+@[^@\s]+$/.test(config.email))) {
-    throw new TypeError('Jira integration email is invalid')
+  if (!Number.isInteger(config.pageSize) || config.pageSize < 1 || config.pageSize > 100) {
+    throw new TypeError('Jira page size must be an integer from 1 through 100')
   }
+  if (
+    !Number.isInteger(config.maxPagesPerTraversal) ||
+    config.maxPagesPerTraversal < 1 ||
+    config.maxPagesPerTraversal > 1_000
+  ) {
+    throw new TypeError('Jira maximum pages must be an integer from 1 through 1000')
+  }
+  if (
+    !Number.isInteger(config.maxItemsPerTraversal) ||
+    config.maxItemsPerTraversal < 1 ||
+    config.maxItemsPerTraversal > 10_000
+  ) {
+    throw new TypeError('Jira maximum items must be an integer from 1 through 10000')
+  }
+  if (!/^[A-Za-z0-9_-]{1,32}$/.test(config.mcpServerName)) throw new TypeError('Jira MCP server name is invalid')
   if (config.integrationAccountId.length > 256) throw new TypeError('Jira integration account id is too long')
   if (config.readyLabel !== '' && !/^[^,\s]{1,255}$/.test(config.readyLabel)) {
     throw new TypeError('Jira ready label is invalid')
@@ -65,14 +75,12 @@ export function validateStoredSettings(config: JiraSettings): void {
       throw new TypeError(`Jira ${name} mapping is invalid`)
     }
   }
-  if (config.siteUrl !== '') validateSiteUrl(config.siteUrl)
   if (config.cloudId !== '' && !/^[a-zA-Z0-9-]{1,128}$/.test(config.cloudId)) {
     throw new TypeError('Jira cloud id is invalid')
   }
-  if (config.projectKey !== '' && !/^[A-Z][A-Z0-9_]{0,254}$/.test(config.projectKey)) {
-    throw new TypeError('Jira project key is invalid')
+  if (config.projectId !== '' && !/^[1-9][0-9]{0,19}$/.test(config.projectId)) {
+    throw new TypeError('Jira project id is invalid')
   }
-  if (config.credentialRef !== '') credentialRef(config.credentialRef)
   if (config.webhookSecretRef !== '') credentialRef(config.webhookSecretRef)
 }
 
@@ -89,15 +97,9 @@ export function requireIngressConfiguredSettings(config: JiraSettings): JiraSett
 }
 
 export function requireConfiguredSettings(config: JiraSettings): JiraSettings {
-  const missing = [
-    'siteUrl',
-    'cloudId',
-    'projectKey',
-    'email',
-    'integrationAccountId',
-    'credentialRef',
-    'readyLabel',
-  ].filter((field) => config[field as keyof JiraSettings] === '')
+  const missing = ['mcpServerName', 'cloudId', 'projectId', 'integrationAccountId', 'readyLabel'].filter(
+    (field) => config[field as keyof JiraSettings] === '',
+  )
   if (missing.length > 0) {
     throw new TrackerProviderError('invalid-configuration', `Jira settings are incomplete: ${missing.join(', ')}`)
   }
@@ -123,11 +125,4 @@ export function requireConfiguredSettings(config: JiraSettings): JiraSettings {
     throw new TrackerProviderError('invalid-configuration', 'Jira settings are invalid')
   }
   return config
-}
-
-function validateSiteUrl(value: string): void {
-  const url = new URL(value)
-  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') {
-    throw new TypeError('Jira site URL must be an HTTPS origin or path without credentials, query or fragment')
-  }
 }

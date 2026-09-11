@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto'
 import {
   readinessGeneration,
-  type TrackerComment,
   type TrackerDependency,
   type TrackerIssueSnapshot,
   TrackerProviderError,
@@ -10,34 +9,31 @@ import {
   trackerCommentId,
   trackerIssueId,
 } from '../../tracker.js'
-import { type JiraRequest, parseProviderResponse } from './request.js'
-import {
-  changelogPageSchema,
-  commentsPageSchema,
-  type JiraChangelog,
-  type JiraIssue,
-  linkedIssueSchema,
-  linkSchema,
-} from './schemas.js'
+import { type JiraChangelog, type JiraComment, type JiraIssue, linkedIssueSchema, linkSchema } from './schemas.js'
 import type { JiraSettings } from './settings.js'
 
-export async function normalizeIssue(
+export function normalizeIssue(
   issue: JiraIssue,
   config: JiraSettings,
-  request: JiraRequest,
-): Promise<TrackerIssueSnapshot> {
+  rawComments: readonly JiraComment[],
+  changelogs: readonly JiraChangelog[],
+): TrackerIssueSnapshot {
   const priorityId = issue.fields.priority?.id
   const priorityRank = priorityId === undefined ? undefined : config.priorityRanks[priorityId]
   if (priorityId === undefined || priorityRank === undefined || !Number.isInteger(priorityRank) || priorityRank < 0) {
     throw new TrackerProviderError('invalid-configuration', `Jira issue "${issue.key}" has no configured priority rank`)
   }
 
-  const comments = await readComments(issue.key, config.pageSize, request)
-  const changelogs = await readChangelogs(issue.key, config.pageSize, request)
+  const comments = rawComments.map((comment) => ({
+    id: trackerCommentId(comment.id),
+    authorId: comment.author?.accountId ?? 'unknown',
+    body: adfToText(comment.body),
+    updatedAt: jiraTimestamp(comment.updated, `comment ${comment.id}`),
+  }))
 
   return {
     bindingId: trackerBindingId(
-      `jira:${createHash('sha256').update(`${config.cloudId}\0${config.projectKey}`).digest('hex').slice(0, 32)}`,
+      `jira:${createHash('sha256').update(`${config.cloudId}\0${config.projectId}`).digest('hex').slice(0, 32)}`,
     ),
     issueId: trackerIssueId(issue.id),
     displayKey: issue.key,
@@ -48,49 +44,6 @@ export async function normalizeIssue(
     comments,
     dependencies: normalizeDependencies(issue.fields.issuelinks, config),
     readiness: normalizeReadiness(changelogs, config),
-  }
-}
-
-async function readComments(issueKey: string, pageSize: number, request: JiraRequest): Promise<TrackerComment[]> {
-  const comments: TrackerComment[] = []
-  let startAt = 0
-  while (true) {
-    const raw = await request(
-      `/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment?startAt=${String(startAt)}&maxResults=${String(pageSize)}`,
-    )
-    const page = parseProviderResponse(commentsPageSchema, raw, `Jira comments for "${issueKey}"`)
-    for (const comment of page.comments) {
-      comments.push({
-        id: trackerCommentId(comment.id),
-        authorId: comment.author?.accountId ?? 'unknown',
-        body: adfToText(comment.body),
-        updatedAt: jiraTimestamp(comment.updated, `comment ${comment.id}`),
-      })
-    }
-    const next = page.startAt + page.comments.length
-    if (next >= page.total) return comments
-    if (page.comments.length === 0 || next <= startAt) {
-      throw new TrackerProviderError('invalid-response', `Jira comments for "${issueKey}" did not advance pagination`)
-    }
-    startAt = next
-  }
-}
-
-async function readChangelogs(issueKey: string, pageSize: number, request: JiraRequest): Promise<JiraChangelog[]> {
-  const changes: JiraChangelog[] = []
-  let startAt = 0
-  while (true) {
-    const raw = await request(
-      `/rest/api/3/issue/${encodeURIComponent(issueKey)}/changelog?startAt=${String(startAt)}&maxResults=${String(pageSize)}`,
-    )
-    const page = parseProviderResponse(changelogPageSchema, raw, `Jira changelog for "${issueKey}"`)
-    changes.push(...page.values)
-    const next = page.startAt + page.values.length
-    if (next >= page.total) return changes
-    if (page.values.length === 0 || next <= startAt) {
-      throw new TrackerProviderError('invalid-response', `Jira changelog for "${issueKey}" did not advance pagination`)
-    }
-    startAt = next
   }
 }
 

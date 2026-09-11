@@ -2,7 +2,6 @@ import { Buffer } from 'node:buffer'
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import { type TrackerIngressDelivery, TrackerProviderError, type TrackerProviderIngressRequest } from '../../tracker.js'
 import { webhookBodySchema } from './schemas.js'
 import { type JiraSettings, requireIngressConfiguredSettings } from './settings.js'
@@ -11,7 +10,7 @@ const MAX_WEBHOOK_BYTES = 256 * 1024
 
 export async function verifyJiraIngress(
   ctx: Context,
-  settings: SettingsScope<JiraSettings>,
+  snapshot: Readonly<JiraSettings>,
   request: TrackerProviderIngressRequest,
 ): Promise<TrackerIngressDelivery> {
   const { method, headers, body, signal } = request
@@ -26,7 +25,7 @@ export async function verifyJiraIngress(
   if (body.byteLength === 0 || body.byteLength > MAX_WEBHOOK_BYTES) {
     throw new TrackerProviderError('invalid-response', 'Jira webhook payload size is invalid')
   }
-  const config = requireIngressConfiguredSettings(settings.get())
+  const config = requireIngressConfiguredSettings(snapshot)
   const resolved = await ctx.credentials.resolve(credentialRef(config.webhookSecretRef))
   signal.throwIfAborted()
   if (resolved === undefined) {

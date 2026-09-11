@@ -1,59 +1,59 @@
 # Provider architecture
 
-This page owns replaceable integration interfaces. [Scope](scope.md) owns product responsibilities; [integrations](integrations.md) owns external behavior. Interface names below are proposed Autopilot types, not existing DSH APIs.
+This page owns replaceable integration interfaces and tracker transport policy. [Scope](scope.md) owns product responsibilities; [integrations](integrations.md) owns external behavior. Source observations and live-validation limits belong in [tracker MCP research](../research/tracker-mcp.md).
 
 ## Composition
 
-Use ordinary Cordis plugins with Service Definition / Provider / Consumer roles. Required implementations are Jira and Linear tracker providers, GitHub and Bitbucket code-host providers, and webhook/ntfy notification providers. Tracker comments use the selected tracker provider; do not implement a second tracker client inside notifications.
+Use ordinary Cordis Service Definition / Provider / Consumer roles. The scheduler consumes normalized provider services; admission, execution and Web never call vendor tools or branch on Jira versus GitHub. One deployment selects one tracker binding/project and one independent code-host binding.
 
-The core scheduler consumes provider services, never vendor clients. Host queries expose normalized run data to Web. No `if provider === 'jira'` branches in admission, execution, worktree cleanup or the shared UI. Providers own integration semantics: mapping vendor data, pagination, access checks, retry classification and external receipts. Delegate transport, credential resolution and protocol mechanics to suitable DSH capabilities or maintained clients; ownership does not require reimplementing them.
+Tracker outbound reads are MCP-first. The official GitHub or Atlassian MCP deployment owns vendor authentication and remote request transport; DSH's MCP client owns the MCP connection/reconnect lifecycle and publishes tools on `ctx.tools`. Autopilot invokes a closed set of exact, read-only semantic operations through `ctx.tools.execute()`, validates bounded machine-readable results and normalizes them into tracker facts. It does not contain a second GitHub or Jira REST client, outbound PAT, email/API-token flow or generic vendor-request escape hatch.
 
-One deployment selects one tracker binding/project and one code-host binding; any supported tracker can pair with any supported code host. Multiple configured notification destinations are allowed. This is composition, not a cross-project control plane.
+Raw webhook verification is the intentional exception. Autopilot receives the exact HTTP bytes and headers, resolves only the inbound webhook secret, verifies the provider signature and returns a provider-qualified delivery identity. MCP then reads current tracker state; webhook payloads are never admission truth.
 
-Publish the Service Definitions and registration types for external plugins. Keep provider entry points independently loadable; a convenience bundle composes selected providers without forcing unused dependencies or credentials. Separate npm packages are appropriate for independently distributed providers, not mandatory for every internal module. Do not build a second plugin loader or a custom dependency-injection framework.
+## Provider interface
 
-## Required interfaces
+The current tracker interface is versioned and read-only:
 
-| Service Definition | Provider operations | Consumers |
-| --- | --- | --- |
-| Tracker | Validate binding/scope; authenticate raw ingress and return a provider-qualified delivery identity; enumerate candidates with cursors; read issue, Brief comments and dependencies; resolve readiness evidence; write/reconcile marked reports; apply configured agent labels/review status | Admission, blocker/completion reporting, Settings lookups |
-| Code host | Validate repository/access; resolve Git remote/base; find/create/reconcile PR; read normalized disposition | Publication controller, maintenance, Settings lookups |
-| Notification | Validate destination; deliver a versioned event; classify result/retry and reconcile where supported | Durable delivery worker, Settings test action |
+| Operation | Obligation |
+| --- | --- |
+| `readCandidates` | Enumerate one bounded page and fully hydrate each issue's comments, blocking dependencies and attributable readiness history. Continuation cursors are generation-local, authenticated and opaque. |
+| `verifyIngress` | Authenticate a bounded raw request without external writes and return a retry-stable provider-qualified delivery ID. |
 
-**Proposed registration design:** supply a stable provider id, interface version, display metadata, validated configuration schema, capability declaration and a binding factory returning a disposer. Reject duplicate ids and incompatible versions. Register through an effect-owned lifetime; required service injection uses Cordis activation rules. Schemas are Host authoritative; optional Client contributions may improve selectors but cannot change validation.
+Providers declare candidates, comments, dependencies, readiness and ingress capabilities. The registry rejects missing capabilities, duplicate IDs and incompatible interface versions. It combines caller cancellation with provider-generation withdrawal, drains active operations before disposal and validates normalized results at the seam.
 
-Expose small operation groups, not a universal HTTP request escape hatch. Inspect existing DSH MCP and installed connectors before choosing provider transport; [connectivity evidence](../research/dsh-connectivity.md) distinguishes model tools from Host integration APIs. Reuse a suitable connector behind the normalized provider service when it satisfies the same evidence/recovery obligations. Otherwise implement only missing operations using REST, GraphQL or a maintained SDK. Model-selected tool calls cannot replace deterministic admission, readiness authorization or publication reconciliation. Credential values, client objects and arbitrary vendor JSON do not become core run fields.
+Keep provider entry points independently loadable. Shared MCP code may own exact-name construction, result bounds, tool-failure mapping, generation fencing and cursor protection; vendor modules own only their closed tool contracts, schemas, traversal and normalization. Do not expose a public `invoke(name, args)` module: arbitrary MCP names and vendor JSON must not become core knowledge.
 
-## Normalized facts
+Future code-host and notification services remain separate normalized interfaces. A code host validates repository identity/access, resolves the approved remote/base, finds or creates one marked PR, reconciles ambiguous writes and returns `open`, `merged`, `closed-unmerged` or `unknown`. A notification provider validates a destination, delivers a versioned event and exposes retry/reconciliation facts. Tracker comments still go through the selected tracker provider; they are not a second notification-side tracker client.
 
-Use branded references qualified by provider binding and stable external identity: issue, project, repository, comment and PR. Display keys, URLs, names and slugs can change; they are not durable uniqueness keys. Version durable provider receipts and validate them when loaded. Vendor-specific recovery data stays opaque to other providers.
+## Exact MCP contracts
 
-An issue snapshot carries scope, summary, selected Brief identity/version, mapped priority rank, dependency completion evidence and readiness evidence. Map priorities explicitly; vendor numeric values are not comparable. Dependency results are `completed`, `not-completed` or `unknown`; lack of access is never completion. Review/done states and label IDs resolve through provider configuration, not English string comparison.
+A tracker provider becomes available only when every required tool exists under its configured `mcp__<serverName>__...` namespace and its live input definition satisfies the pinned contract.
 
-A PR receipt carries provider-qualified identity, repository/base/head association, URL and normalized disposition: `open`, `merged`, `closed-unmerged` or `unknown`. Bitbucket decline and GitHub unmerged closure normalize to `closed-unmerged`, not `merged`. Local Git remains a shared facility; PR REST operations do not push commits.
+- GitHub requires official `get_me`, `list_issues`, `issue_read` (`get` and `get_comments`), and feature-gated `issue_dependency_read` (`get_blocked_by`), plus `autopilot_read_issue_timeline` in the same MCP namespace. Each traversal compares `get_me` with the configured integration actor. The timeline extension must use the same MCP deployment and identity; there is no direct REST or second-token fallback.
+- Jira requires primary `atlassianUserInfo` plus the flat Atlassian `?tools=all` operations `searchJiraIssuesUsingJql`, `listJiraIssueComments`, and `listJiraIssueChangelogs`. Each traversal compares the authenticated account with configuration and verifies the stable project ID returned for every candidate. Autopilot calls those exact tools; it does not use natural-language discovery or deferred execute-tier selection during reconciliation.
 
-Operation errors distinguish authentication, permission, invalid configuration, not found, conflict, rate limit, transient failure, unsupported capability and ambiguous acknowledgement. Include sanitized diagnostic context and retry timing where available. Core policies decide whether to wait, pause or request operator action; providers never independently rerun coding.
+All calls use fixed arguments and unique internal call IDs. Prefer `structuredContent`; otherwise accept only the contract's single JSON text block. Enforce per-result byte limits, schema limits, page/item ceilings, repeated/non-advancing cursor rejection and cancellation. Recheck the bound tool definition after execution so a result from a replaced MCP generation cannot cross the seam. Tool errors are sanitized and conservatively classified; unsupported or malformed evidence fails closed.
 
-## Readiness and capabilities
+## Availability and deployment
 
-Providers return actor identity, transition identity/order evidence, before/after readiness and origin confidence sufficient for the [lifecycle authorization policy](lifecycle.md#human-readiness-authorization). Report absent evidence explicitly; provider authentication or a user-shaped actor record is not a substitute.
+The MCP mount watches Settings and DSH `tools/change`. It snapshots Settings, binds exact live tool definitions and registers one tracker generation only while they remain current. Any missing tool, schema drift, invalid configuration or definition replacement withdraws the provider; active reads are cancelled and drained. A later conforming generation remounts normally. Do not keep an old REST provider or parallel compatibility mode available during this interval.
 
-Require scope reads, designated comments, dependencies, configured label/status writes, human-readiness evidence and PR reconciliation for the selected workflow. Validate required capabilities before enabling dispatch. Optional webhooks or rich selectors can fall back to reconciliation/basic inputs only if required semantics remain provable. Do not silently omit dependency checks or weaken authorization to accommodate a provider. Explain unsupported configurations in health and Settings.
+Programmatic root calls are incompatible with a DSH ToolRuntime configured globally as PTC-only: that mode admits only `run_code` at the root. Tracker deployments therefore require global `native` or `both` presentation until DSH supplies a distinct trusted Host-programmatic execution path. Never forge a PTC parent token to bypass this rule.
 
-## Configuration and provider changes
+Configure the official MCP deployment itself with read-only, least-privilege access and only required repositories/projects. All required operations for one binding, including the GitHub timeline extension, must share one MCP namespace so outbound authentication has one owner. The namespace is snapshotted with the provider binding; secret values never enter run state.
 
-Configuration selects installed provider ids and validated binding fields: tracker/project, code host/repository mapping, notifications, credential references and policy mappings. Supply examples for Jira + GitHub and Linear + Bitbucket; document that the other two combinations work identically. These are future schema examples to ship after the interface is implemented, not runnable YAML in this specification.
+## Normalized facts and policy
 
-The first deployment selects Jira Cloud and GitHub. Its single configured Jira project binds to exactly one configured GitHub repository and base branch. Ticket fields, labels and Agent Brief text cannot select or override the repository. Provider interfaces remain independent so later deployments can select Linear or Bitbucket without adding provider-specific branches to Autopilot core.
+Use provider-qualified stable identities for bindings, issues, comments and readiness generations. Display keys, URLs, names and slugs are not global identities. An issue snapshot carries scope, summary, mapped priority, current labels, designated Brief comments, dependency completion evidence and readiness evidence.
 
-Operators may change mappings, labels, schedules and connection settings without editing source. Adding a genuinely new protocol requires installing a compatible provider plugin; an arbitrary URL/JSON template is not automatically a complete tracker integration. Install through trusted DSH composition, not code pasted into a ticket or a browser form.
+Map priorities and completion states explicitly. Dependency results are `completed`, `not-completed` or `unknown`; missing access or an unrecognized terminal reason is never completion. Providers return immutable actor identity and ordered transition evidence sufficient for [human-readiness authorization](lifecycle.md#human-readiness-authorization). A current label, webhook sender or user-shaped MCP record cannot substitute for a trusted human transition. Missing, partial, contradictory or ambiguous evidence rejects admission.
 
-Snapshot binding identity/version with each run and each external intent. Credential rotation changes the resolved secret without reassigning that identity. In v1 reject a provider/project/repository-binding switch while unfinished runs or unresolved external intents depend on it; pause is not migration. Require explicit resolution/cancellation and successful reconciliation first. Mapping edits and the narrow delivery-repair exception follow [operations](operations.md). Preserve historical references after a switch; maintenance still requires the original provider/binding or reports unknown and retains worktrees. Never reinterpret old receipts through a newly selected provider.
+Operation errors distinguish invalid configuration/response, unavailable capability or generation, timeout, transient failure and conflicts wherever DSH preserves evidence. Never expose raw MCP output, tool errors, credentials or live ticket content in diagnostics.
 
-On provider unload, fence dependent dispatch/publication and await owned requests before disposal. Reconcile uncertain effects after remount; no duplicate pollers, sends or PRs. A temporarily unavailable provider must not delete queued work or erase receipts.
+Snapshot provider binding identity and interpretation with every run and external intent. Reject an ordinary tracker/project/repository switch while unfinished runs or unresolved writes depend on it; rotation inside the same official MCP identity does not reassign the binding. After a provider or tool generation disappears, retain historical receipts and reconcile them through the original binding when it returns. Never reinterpret old receipts through a newly selected provider.
 
-## Extension and acceptance
+## Future providers and acceptance
 
-Ship shared conformance fixtures/helpers with the public interface: authenticated ingress, duplicate deliveries, paginated reads, unknown access, actor attribution, label preservation, mapped priorities/statuses, ambiguous writes, replay, rate limits, timeouts, redaction, disposal and restart recovery. Code-host fixtures include PR identity matching and open/merged/closed-unmerged/unknown cleanup dispositions.
+Linear follows the same normalized tracker interface only after its official MCP deployment proves exact candidate, comment, dependency and immutable readiness-actor contracts. Do not add a GraphQL/token fallback. Bitbucket Cloud code-host support should use official Atlassian MCP under its Atlassian identity and a separate normalized code-host adapter; Atlassian's Bitbucket tools do not make Bitbucket Issues a supported tracker.
 
-Prove all four tracker/code-host combinations through the same fixture end-to-end suite. Obtain live evidence for each shipped provider on authorized test resources. A third-party fixture provider must load, register Settings and pass conformance without modifying core imports, switch statements or UI routing. Record supported DSH/interface/provider versions. Source research in [Linear](../research/linear.md) and [Bitbucket](../research/bitbucket.md) is not a supported-provider certification.
+Shared conformance fixtures cover authenticated ingress, duplicate deliveries, complete pagination, stable identities, actor attribution, dependency direction and unknown access, malformed/oversized results, cancellation, tool replacement, Settings remount, redaction, disposal and restart recovery. Mock-tool tests prove the local seam; production support additionally requires an authorized live conformance run against the exact official server/tool generation. Record live evidence on the relevant GitHub issue, not in this specification.

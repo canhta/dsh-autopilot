@@ -10,12 +10,13 @@ export const issueSchema = z.object({
       .nullable()
       .optional(),
     labels: z.array(z.string()),
+    project: z.object({ id: z.string().min(1).max(256) }),
     issuelinks: z.array(z.unknown()).default([]),
   }),
 })
 
 export const searchSchema = z.object({
-  issues: z.array(issueSchema),
+  issues: z.array(issueSchema).max(100),
   nextPageToken: z.string().min(1).max(4096).optional(),
 })
 
@@ -30,7 +31,7 @@ export const commentsPageSchema = z.object({
   startAt: z.number().int().nonnegative(),
   maxResults: z.number().int().positive(),
   total: z.number().int().nonnegative(),
-  comments: z.array(commentSchema),
+  comments: z.array(commentSchema).max(100),
 })
 
 const changelogItemSchema = z.object({
@@ -56,7 +57,7 @@ export const changelogPageSchema = z.object({
   startAt: z.number().int().nonnegative(),
   maxResults: z.number().int().positive(),
   total: z.number().int().nonnegative(),
-  values: z.array(changelogSchema),
+  values: z.array(changelogSchema).max(100),
 })
 
 export const webhookBodySchema = z.object({
@@ -77,4 +78,5 @@ export const linkedIssueSchema = z.object({
 })
 
 export type JiraIssue = z.infer<typeof issueSchema>
+export type JiraComment = z.infer<typeof commentSchema>
 export type JiraChangelog = z.infer<typeof changelogSchema>

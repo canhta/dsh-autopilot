@@ -12,7 +12,7 @@ Run snapshots preserve execution scope and integration interpretation, not permi
 
 | Configuration group | Required choices |
 | --- | --- |
-| Tracker | Provider binding, project scope, credential reference, ready/state label mapping, Brief selection, completed/review status mapping |
+| Tracker | Provider binding, project scope, official MCP namespace, inbound-webhook credential reference, ready/state label mapping, Brief selection, completed/review status mapping |
 | Target | Code-host provider binding, one repository and base branch for the initial Jira Cloud + GitHub deployment; routing remains configuration-owned |
 | Scheduler | Enabled, cadence, timezone, allowed windows, running/queue limits |
 | Execution | Supported DSH version, preset, model route where needed, timeouts and delegation policy |
@@ -20,7 +20,7 @@ Run snapshots preserve execution scope and integration interpretation, not permi
 | Notifications | Channels, event subscriptions, secret references, disclosure, retries/timeouts |
 | Storage | Runtime data/worktree roots, cleanup retention, history retention and backup location |
 
-Provider bindings and extension rules are owned by [provider architecture](providers.md). Provider-specific fields use their registered schemas; credentials remain references. Resolve priority ordering explicitly rather than comparing provider-native numbers.
+Provider bindings and extension rules are owned by [provider architecture](providers.md). Provider-specific fields use their registered schemas. Official MCP configurations own outbound authentication; Autopilot credential references are only for capabilities it still owns, such as inbound webhook verification. Resolve priority ordering explicitly rather than comparing provider-native numbers.
 
 These are semantic configuration groups, not a final YAML schema. Validate references as soon as resolvable and reject invalid writes without replacing valid configuration. Store credentials through supported Host credential facilities, not in model-visible run snapshots.
 

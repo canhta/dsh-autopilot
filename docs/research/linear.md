@@ -8,7 +8,7 @@ Persist provider-instance/organization identity plus the issue UUID; retain the 
 
 A Linear project can span teams; issue workflow states are team-specific. One configured project therefore requires explicit mappings for every admitted team, not an assumption that a project has one workflow. Validate ready/agent label IDs, dependency-completed state IDs, review state IDs, priority ordering and access before enabling dispatch. Unknown or inaccessible teams fail eligibility. Do not create workflows automatically. [Projects](https://linear.app/docs/projects), [issue status](https://linear.app/docs/configuring-workflows).
 
-Resolve the designated Agent Brief from paginated issue comments and preserve its comment ID, revision metadata and digest. Use the shared comment convention, not the issue description as a silent fallback. The official SDK supports comment creation and issue updates. Mutation success requires checking both GraphQL errors and returned mutation results. [SDK mutations](https://linear.app/developers/sdk-fetching-and-modifying-data), [GraphQL errors](https://linear.app/developers/graphql#error-handling).
+Resolve the designated Agent Brief from paginated issue comments and preserve its comment ID, revision metadata and digest. Use the shared comment convention, not the issue description as a silent fallback. Linear's official MCP server exposes issue and comment operations, but its public tool/result schemas must be captured and validated before support is claimed. [Linear MCP](https://linear.app/docs/mcp).
 
 ## Dependencies and readiness evidence
 
@@ -22,11 +22,11 @@ Do not promise complete reconstruction from issue activity: Linear documents tha
 
 ## Transport and credentials
 
-Use Host-held credential references. OAuth supports app actors and token refresh; select one supported authentication mode and test renewal/revocation. Read/write scope is needed for labels/status; comment-only permissions are insufficient. Avoid requesting admin merely for normal execution; an administrator can provision the webhook separately. [OAuth](https://linear.app/developers/oauth-2-0-authentication).
+Use Linear's official hosted MCP server as the tracker transport. Its supported OAuth, bearer-token or API-key authentication belongs to that server connection; Autopilot must not collect the same credential or add a GraphQL/SDK fallback. For unattended app identity, test client-credential renewal and DSH MCP reconnection before support is claimed. If a required history/dependency fact is absent, add only a narrow same-auth extension or surface the missing capability upstream. [Linear MCP](https://linear.app/docs/mcp), [OAuth](https://linear.app/developers/oauth-2-0-authentication).
 
 Linear webhook subscriptions are organization/team scoped, so enforce the configured project locally. Verify raw-body HMAC-SHA256 and the signed-body timestamp, with length-safe constant-time comparison. Require public HTTPS ingress separately from operator-browser access. Persist ingress, then return HTTP 200 within five seconds; Linear documents three retries after one minute, one hour and six hours, and possible disabling. Deduplicate `Linear-Delivery`; maintain reconciliation because delivery is finite. Unknown actor, stale or reordered events cannot authorize resume. [Webhooks](https://linear.app/developers/webhooks).
 
-Paginate candidates/comments/dependencies to completion using cursors; filter queries and bound nesting. Handle partial GraphQL errors and `RATELIMITED` responses, including HTTP 400; use returned reset/remaining headers rather than hardcoded quotas. [Pagination](https://linear.app/developers/pagination), [filtering](https://linear.app/developers/filtering), [rate limits](https://linear.app/developers/rate-limiting).
+Bind exact MCP tools and validate every output before normalization. Paginate candidates/comments/dependencies to completion using cursors, filter queries and bound nesting. Do not assume the hosted MCP forwards GraphQL error codes or rate headers until conformance proves it. [Pagination](https://linear.app/developers/pagination), [filtering](https://linear.app/developers/filtering), [rate limits](https://linear.app/developers/rate-limiting).
 
 ## Required integration evidence
 
@@ -36,6 +36,6 @@ Paginate candidates/comments/dependencies to completion using cursors; filter qu
 - Human UI versus app/PAT mutations, null actor, remove/re-add ready label, lost/reordered events and missed downtime transitions prove attribution limits; no inferred approval.
 - Valid/replayed/tampered/malformed signatures and delayed retries exercise ingress deduplication and reconciliation.
 - Label/status writes preserve unrelated fields; lost comment acknowledgements reconcile markers without duplicate reports.
-- Rate limits, partial errors, pagination, revoked access and token renewal stop or retry safely without rerunning coding.
+- MCP rate failures, malformed results, pagination, revoked access, token renewal and generation replacement stop or retry safely without rerunning coding.
 
-Record schema/SDK versions and sanitized fixtures. Documentation evidence alone does not close these gates.
+Record official MCP schemas/versions and sanitized fixtures. Documentation evidence alone does not close these gates; no parallel GraphQL/SDK implementation is maintained.

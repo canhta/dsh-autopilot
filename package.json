@@ -22,6 +22,10 @@
       "types": "./lib/config.d.ts",
       "default": "./lib/config.js"
     },
+    "./github-issues": {
+      "types": "./lib/github-issues.d.ts",
+      "default": "./lib/github-issues.js"
+    },
     "./jira": {
       "types": "./lib/jira.d.ts",
       "default": "./lib/jira.js"

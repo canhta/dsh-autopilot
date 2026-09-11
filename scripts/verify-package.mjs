@@ -105,6 +105,26 @@ function assertMissingEntryFails(profileDirectory) {
   }
 }
 
+function assertGitHubIssuesSubpath(profileDirectory) {
+  const result = spawnSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '--eval',
+      "const entry = await import('dsh-autopilot/github-issues'); if (entry.name !== 'dsh-autopilot-github-issues' || typeof entry.registerGitHubIssuesProvider !== 'function') process.exitCode = 1",
+    ],
+    { cwd: profileDirectory, encoding: 'utf8', timeout: 15_000 },
+  )
+  if (result.error) throw result.error
+  if (result.status !== 0) {
+    throw new Error(
+      ['GitHub Issues package subpath did not expose its loader contract', result.stdout, result.stderr]
+        .filter(Boolean)
+        .join('\n'),
+    )
+  }
+}
+
 try {
   const dshVersion = run(npx, [...dsh, '--version']).trim()
   run(npx, [...dsh, '--profile', 'autopilot-package-smoke', '--from-default-profile', 'web', '--dump-config'])
@@ -113,10 +133,12 @@ try {
   if (
     !config.includes('# == dsh-autopilot\n') ||
     !config.includes('- id: autopilot\n  name: dsh-autopilot\n') ||
-    !config.includes('- id: autopilot-jira\n  name: dsh-autopilot/jira\n')
+    !config.includes('- id: autopilot-jira\n  name: dsh-autopilot/jira\n') ||
+    !config.includes('- id: autopilot-github-issues\n  name: dsh-autopilot/github-issues\n')
   ) {
     throw new Error('installed profile does not contain the dsh-autopilot bundle layer')
   }
+  assertGitHubIssuesSubpath(join(dshHome, 'profiles', 'autopilot-package-smoke'))
   await bootProfile('autopilot-package-smoke')
   await bootProfile('autopilot-package-smoke')
 

@@ -37,9 +37,11 @@ Specs define required behavior and acceptance rules; a rule's existence does not
 | Selecting DSH capabilities before implementation | [Capability map](research/dsh.md#capability-reading-map) |
 | Public Web components, Settings placement and Client imports | [Web reuse](research/dsh-web.md) |
 | API, streaming, MCP, SDK and process integration | [Connectivity reuse](research/dsh-connectivity.md) |
+| Official tracker MCP transport, exact tool contracts and gaps | [Tracker MCP evidence](research/tracker-mcp.md) |
 | Presets, skills, execution, continuation and delegation | [Execution reuse](research/dsh-execution.md) |
 | Settings, credentials, storage, timing, ingress and Git | [Host platform reuse](research/dsh-platform.md) |
 | Linear-specific mappings and limitations | [Linear evidence](research/linear.md) |
+| GitHub Issues-specific mappings and limitations | [GitHub Issues evidence](research/github-issues.md) |
 | Bitbucket-specific mappings and limitations | [Bitbucket evidence](research/bitbucket.md) |
 
 Engineering-skill configuration applies to work on this repository, not to Autopilot's runtime provider settings.
