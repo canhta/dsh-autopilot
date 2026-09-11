@@ -12,7 +12,7 @@ dsh-autopilot is an open-source plugin for [DeepSeek Harness](https://github.com
 
 You decide which tickets are ready, when the agent can work and how much it can spend. Autopilot coordinates the work; your repository defines how code is built and checked; people keep control of blockers, review and merge.
 
-> **Pre-release · admission core available.** The repository ships a loadable DSH bundle, a provider-independent durable admission queue, and a Jira Cloud read adapter. Tracker ingress, scheduling, execution, live-provider certification, pull-request publication and the Web UI are not implemented yet. Follow each implementation slice in [GitHub Issues](https://github.com/canhta/dsh-autopilot/issues).
+> **Pre-release · fixture execution available.** The repository ships a loadable DSH bundle, a provider-independent durable admission queue, a Jira Cloud read adapter, and a fixture-only durable execution path. Tracker ingress, scheduling, live-provider execution, pull-request publication and the Web UI are not implemented yet. Follow each implementation slice in [GitHub Issues](https://github.com/canhta/dsh-autopilot/issues).
 
 [Product direction](#product-direction) · [Installation](#installation) · [Local development](#local-development) · [Contributing](#contributing) · [Documentation](docs/README.md)
 
@@ -53,10 +53,12 @@ This is an issue-driven AI Development Lifecycle (AIDLC) flow for **one project 
 
 ## Current implementation
 
-The Host bundle currently contributes two independently loadable rows:
+The Host bundle currently contributes two independently loadable rows. Its root row exposes three public services:
 
-- `dsh-autopilot` registers the public tracker provider registry and admission service. Reconciliation reads normalized provider pages, validates a single versioned Agent Brief, requires current attributable human readiness, checks dependencies, and commits ingress identity plus new queued runs in one bounded DSH storage-domain record.
+- `dsh-autopilot` registers the public tracker provider registry, admission service and fixture dispatcher. Reconciliation reads normalized provider pages, validates a single versioned Agent Brief, requires current attributable human readiness, checks dependencies, and commits ingress identity plus new queued runs in one bounded DSH storage-domain record.
 - `dsh-autopilot/jira` registers the Jira Cloud adapter. It reads current candidates, comments, blocking links and readiness changelogs with pagination; resolves its API-token reference through DSH Credentials for every operation; maps configured priorities/statuses; and normalizes rate limits and failures without exposing response bodies or credentials.
+
+Execution is disabled by default. The only accepted execution mode is `fixture`, with absolute target-repository and managed-worktree paths, an explicit base branch, and positive deployment, per-run and reservation token limits. That path atomically claims and reserves one queued run, creates a real managed Git worktree, creates a native DSH root Agent and persisted Session on the hard-coded controlled-model route, accepts one scoped structured terminal report, and settles disjoint provider token categories in the same durable aggregate. Missing or excessive usage retains the reservation and stops later authorization. A Host restart preserves the identities and marks an interrupted run for explicit recovery instead of dispatching it again.
 
 The `dsh-autopilot-jira` Settings namespace requires the Jira site URL and Cloud ID, project key, dedicated integration email and account ID, credential reference, ready label, and explicit priority, completed-status, blocking-link, automation-account, and trusted-human-account mappings. Scoped tokens are sent only through the Cloud ID gateway. The integration account and configured automation identities can never establish human readiness; automation and trusted-human mappings must be disjoint, and missing dependency or trusted-human mappings fail configuration instead of weakening admission.
 
@@ -64,11 +66,11 @@ Jira identifies Atlassian/customer accounts but cannot prove that an update made
 
 External provider plugins implement the `TrackerProvider` interface exported by `dsh-autopilot/tracker` and register through `ctx.tracker.register()`. `dsh-autopilot/testing` exports a deterministic fixture adapter for conformance and integration tests. Registration must be effect-owned by the provider plugin; withdrawal aborts and drains active reads before its disposer completes.
 
-The admission interface accepts `startup`, `scheduled`, `manual` and authenticated-`webhook` reconciliation sources, but this slice does not register timers or HTTP routes. No installed path dispatches model work or writes to Jira. Live Jira Cloud support remains unclaimed until issue #4 receives authorized synthetic resources and credential references.
+The admission interface accepts `startup`, `scheduled`, `manual` and authenticated-`webhook` reconciliation sources, but this slice does not register timers or HTTP routes. The default configuration dispatches no model work, and no path writes to Jira. The fixture path cannot select a live provider or model. Live Jira Cloud support remains unclaimed until issue #4 receives authorized synthetic resources and credential references.
 
 ## Installation
 
-The pre-alpha bundle can be installed from a locally packed artifact. It does not yet automate tickets, so no Jira, GitHub or model credential is required for this verification path; the unconfigured Jira row remains unavailable for reconciliation while the Host still boots.
+The pre-alpha bundle can be installed from a locally packed artifact. It does not yet automate live tickets, so no Jira, GitHub or model credential is required for this verification path; the unconfigured Jira row remains unavailable for reconciliation while the Host still boots.
 
 Prerequisites: Git, [Node.js](https://nodejs.org/) 24 or newer, and [pnpm](https://pnpm.io/). DSH itself is invoked from the npm `latest` tag.
 

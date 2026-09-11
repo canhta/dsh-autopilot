@@ -14,6 +14,10 @@
       "types": "./lib/admission.d.ts",
       "default": "./lib/admission.js"
     },
+    "./dispatch": {
+      "types": "./lib/dispatch.d.ts",
+      "default": "./lib/dispatch.js"
+    },
     "./jira": {
       "types": "./lib/jira.d.ts",
       "default": "./lib/jira.js"
@@ -73,30 +77,39 @@
   },
   "dependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-credentials": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-settings": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-storage": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-storage-domain": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-agent": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-credentials": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-llm": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-session": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-settings": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-storage": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-subprocess": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-workspace": "0.1.5-rc.1",
     "@deepseek-ai/schemastery": "^3.18.2",
     "zod": "^4.6.1"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-credentials": "^0.0.1-rc.1",
-    "@deepseek-ai/dsh-settings": "^0.0.1-rc.1",
-    "@deepseek-ai/dsh-storage": "^0.0.1-rc.1",
-    "@deepseek-ai/dsh-storage-domain": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-credentials": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-storage": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "^0.1.5-rc.1",
     "@deepseek-ai/schemastery": "^3.18.1-rc.1",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@biomejs/biome": "latest",
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-credentials": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-settings": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-storage": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-storage-domain": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-storage-sqlite": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-agent-loop": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-http-proxy": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-session-persistence": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-session-projection": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-storage-sqlite": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-subprocess-local": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.1.5-rc.1",
     "@deepseek-ai/schemastery": "^3.18.2",
     "@types/node": "^22.20.2",
     "lefthook": "latest",

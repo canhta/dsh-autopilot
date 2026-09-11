@@ -2,7 +2,7 @@ import { Buffer } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
-import { type SettingsScope, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
 import {
@@ -141,7 +141,7 @@ const linkedIssueSchema = z.object({
  * effect. Configuration/credential/provider failures reject reads; provider withdrawal aborts and drains active HTTP.
  */
 export function registerJiraProvider(ctx: Context, fetchImplementation: typeof fetch): () => Promise<void> {
-  const settings = ctx.settings.register(settingsNamespace('dsh-autopilot-jira'), jiraSettingsSchema, {
+  const settings = ctx.settings.register('dsh-autopilot-jira', jiraSettingsSchema, {
     validate: validateStoredSettings,
   })
   return ctx.tracker.register(createJiraProvider(ctx, settings, fetchImplementation))

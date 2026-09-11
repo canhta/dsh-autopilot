@@ -143,12 +143,18 @@ function deterministicRunId(run: StoredRun): string {
   return `run_${createHash('sha256').update(identity).digest('hex').slice(0, 32)}`
 }
 
-async function boot(path: string, issues: readonly TrackerIssueSnapshot[], maxQueued = 20) {
+async function boot(
+  path: string,
+  issues: readonly TrackerIssueSnapshot[],
+  maxQueued = 20,
+  admissionSettings: Record<string, unknown> = {},
+) {
   const ctx = trackContext(
     await mountHostServices(path, {
       'dsh-autopilot': {
         trackerProvider: 'fixture',
         maxQueued,
+        ...admissionSettings,
       },
     }),
   )
@@ -159,6 +165,62 @@ async function boot(path: string, issues: readonly TrackerIssueSnapshot[], maxQu
 }
 
 describe('admission service seam', () => {
+  it('keeps dispatch disabled unless the fixture mode and positive limits are explicit', async () => {
+    const { ctx } = await boot(await databasePath(), [candidate()])
+    await ctx.admission.reconcile({ source: 'manual' })
+
+    await expect(ctx.admission.claimNext()).rejects.toThrow(/dispatch is disabled/)
+
+    expect(ctx.admission.snapshot()).toMatchObject({
+      runs: [{ state: 'queued' }],
+      budget: { reservedTokens: 0, settledTokens: 0, usageUncertain: false },
+    })
+  })
+
+  it('atomically claims one run without oversubscribing the deployment token cap', async () => {
+    const { ctx } = await boot(
+      await databasePath(),
+      [
+        candidate({ issueId: trackerIssueId('first'), displayKey: 'FIX-1', priorityRank: 1 }),
+        candidate({ issueId: trackerIssueId('second'), displayKey: 'FIX-2', priorityRank: 2 }),
+      ],
+      20,
+      {
+        executionMode: 'fixture',
+        targetRepository: '/tmp/fixture-target',
+        targetBaseBranch: 'main',
+        managedWorktreeRoot: '/tmp/fixture-worktrees',
+        deploymentTokenCap: 100,
+        perRunTokenCap: 100,
+        runTokenAllowance: 60,
+      },
+    )
+    await ctx.admission.reconcile({ source: 'manual' })
+
+    const claims = await Promise.allSettled([ctx.admission.claimNext(), ctx.admission.claimNext()])
+
+    expect(claims.filter((claim) => claim.status === 'fulfilled')).toHaveLength(1)
+    expect(claims.filter((claim) => claim.status === 'rejected')).toMatchObject([
+      { reason: { message: expect.stringMatching(/deployment token cap/i) } },
+    ])
+    expect(ctx.admission.snapshot()).toMatchObject({
+      budget: { reservedTokens: 60, settledTokens: 0, usageUncertain: false },
+      runs: [
+        {
+          displayKey: 'FIX-1',
+          state: 'implementing',
+          execution: {
+            attempt: 1,
+            sessionId: expect.stringMatching(/^autopilot-run_/),
+            worktreePath: expect.stringMatching(/\/run_[a-f0-9]{32}$/),
+          },
+          budget: { capTokens: 100, reservedTokens: 60 },
+        },
+        { displayKey: 'FIX-2', state: 'queued' },
+      ],
+    })
+  })
+
   it('commits duplicate and competing reconciliation as one queued run', async () => {
     const { ctx } = await boot(await databasePath(), [candidate()])
 
@@ -393,7 +455,12 @@ describe('admission service seam', () => {
     await expect(ctx.admission.reconcile({ source: 'manual' })).rejects.toMatchObject({
       code: 'invalid-response',
     })
-    expect(ctx.admission.snapshot()).toEqual({ revision: 0, runs: [], acceptedIngress: [] })
+    expect(ctx.admission.snapshot()).toEqual({
+      revision: 0,
+      runs: [],
+      acceptedIngress: [],
+      budget: { reservedTokens: 0, settledTokens: 0, usageUncertain: false },
+    })
   })
 
   it('fails explicitly when the durable admission record is corrupt on reopen', async () => {
@@ -546,6 +613,11 @@ describe('admission service seam', () => {
     await expect(
       ctx.admission.reconcile({ source: 'webhook', deliveryId: 'fixture:delivery-failure' }),
     ).rejects.toThrow()
-    expect(ctx.admission.snapshot()).toEqual({ revision: 0, runs: [], acceptedIngress: [] })
+    expect(ctx.admission.snapshot()).toEqual({
+      revision: 0,
+      runs: [],
+      acceptedIngress: [],
+      budget: { reservedTokens: 0, settledTokens: 0, usageUncertain: false },
+    })
   })
 })

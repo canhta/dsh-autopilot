@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto'
+import { isAbsolute, join } from 'node:path'
 import { type Context, Service } from '@deepseek-ai/cordis'
-import { type SettingsScope, settingsNamespace } from '@deepseek-ai/dsh-settings'
+import { type SessionId, SessionId as sessionId } from '@deepseek-ai/dsh-session'
+import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import { defineDomain, domainTable, type KvTable } from '@deepseek-ai/dsh-storage-domain'
 import s from '@deepseek-ai/schemastery'
 import { z } from 'zod'
@@ -79,10 +81,73 @@ export interface QueuedRun {
   readonly queueSequence: number
 }
 
+export interface RunExecutionSnapshot {
+  readonly attempt: number
+  readonly sessionId: SessionId
+  readonly targetRepository: string
+  readonly baseBranch: string
+  readonly worktreePath: string
+  readonly branch: string
+  readonly startedAt: string
+  readonly git?: GitExecutionSnapshot | undefined
+  readonly recovery?: RunRecoverySnapshot | undefined
+}
+
+export interface GitExecutionSnapshot {
+  readonly baseHead: string
+  readonly head: string
+  readonly status: string
+}
+
+export interface RunRecoverySnapshot {
+  readonly kind: 'required'
+  readonly reason: 'host-restart'
+  readonly interruptedAt: string
+}
+
+export interface RunBudgetSnapshot {
+  readonly capTokens: number
+  readonly reservedTokens: number
+  readonly settledTokens: number
+  readonly usageUncertain: boolean
+}
+
+export interface ImplementingRun extends Omit<QueuedRun, 'state'> {
+  readonly state: 'implementing'
+  readonly execution: RunExecutionSnapshot
+  readonly budget: RunBudgetSnapshot
+}
+
+export type ExecutionOutcome =
+  | { readonly kind: 'verified'; readonly summary: string; readonly evidence: string[] }
+  | { readonly kind: 'blocked'; readonly summary: string; readonly evidence: string[] }
+  | { readonly kind: 'failed'; readonly summary: string; readonly evidence: string[] }
+
+export interface TerminalRun extends Omit<QueuedRun, 'state'> {
+  readonly state: 'publishing' | 'blocked' | 'failed'
+  readonly execution: RunExecutionSnapshot
+  readonly budget: RunBudgetSnapshot
+  readonly outcome: ExecutionOutcome
+  readonly completedAt: string
+}
+
+export type AutopilotRun = QueuedRun | ImplementingRun | TerminalRun
+
+export type RunUsageSettlement =
+  | { readonly kind: 'known'; readonly tokens: number }
+  | { readonly kind: 'uncertain'; readonly reason: string }
+
+export interface AdmissionBudgetSnapshot {
+  readonly reservedTokens: number
+  readonly settledTokens: number
+  readonly usageUncertain: boolean
+}
+
 export interface AdmissionSnapshot {
   revision: number
-  runs: readonly QueuedRun[]
+  runs: readonly AutopilotRun[]
   acceptedIngress: readonly string[]
+  budget: AdmissionBudgetSnapshot
 }
 
 export interface ReconcileResult extends AdmissionSnapshot {
@@ -93,6 +158,13 @@ interface AdmissionSettings {
   trackerProvider: string
   maxQueued: number
   maxBriefBytes: number
+  executionMode: 'disabled' | 'fixture'
+  targetRepository: string
+  targetBaseBranch: string
+  managedWorktreeRoot: string
+  deploymentTokenCap: number
+  perRunTokenCap: number
+  runTokenAllowance: number
 }
 
 const admissionSettingsSchema: s<AdmissionSettings> = s.object({
@@ -103,6 +175,13 @@ const admissionSettingsSchema: s<AdmissionSettings> = s.object({
     .min(1024)
     .max(32 * 1024)
     .default(32 * 1024),
+  executionMode: s.union(['disabled', 'fixture'] as const).default('disabled'),
+  targetRepository: s.string().default(''),
+  targetBaseBranch: s.string().default(''),
+  managedWorktreeRoot: s.string().default(''),
+  deploymentTokenCap: s.number().min(0).default(0),
+  perRunTokenCap: s.number().min(0).default(0),
+  runTokenAllowance: s.number().min(0).default(0),
 })
 
 const briefSchema = z.object({
@@ -114,7 +193,7 @@ const briefSchema = z.object({
   }),
 })
 
-const runSchema = z.object({
+const runBaseSchema = z.object({
   runId: z
     .string()
     .regex(/^run_[a-f0-9]{32}$/)
@@ -129,18 +208,74 @@ const runSchema = z.object({
   priorityRank: z.number().int().nonnegative(),
   readinessGeneration: z.string().transform(readinessGeneration),
   brief: briefSchema,
-  state: z.literal('queued'),
   queuedAt: z.iso.datetime({ offset: true }),
   queueSequence: z.number().int().positive(),
 })
 
+const executionSchema = z.object({
+  attempt: z.number().int().positive(),
+  sessionId: z.string().min(1).max(256).transform(sessionId),
+  targetRepository: z.string().min(1).max(4096),
+  baseBranch: z.string().min(1).max(256),
+  worktreePath: z.string().min(1).max(4096),
+  branch: z.string().min(1).max(256),
+  startedAt: z.iso.datetime({ offset: true }),
+  git: z
+    .object({
+      baseHead: z.string().regex(/^[a-f0-9]{40,64}$/),
+      head: z.string().regex(/^[a-f0-9]{40,64}$/),
+      status: z.string().max(1024 * 1024),
+    })
+    .optional(),
+  recovery: z
+    .object({
+      kind: z.literal('required'),
+      reason: z.literal('host-restart'),
+      interruptedAt: z.iso.datetime({ offset: true }),
+    })
+    .optional(),
+})
+
+const runBudgetSchema = z.object({
+  capTokens: z.number().int().positive(),
+  reservedTokens: z.number().int().nonnegative(),
+  settledTokens: z.number().int().nonnegative(),
+  usageUncertain: z.boolean(),
+})
+
+const outcomeSchema = z.object({
+  kind: z.enum(['verified', 'blocked', 'failed']),
+  summary: z.string().min(1).max(4096),
+  evidence: z.array(z.string().min(1).max(4096)).max(100),
+})
+
+const queuedRunSchema = runBaseSchema.extend({ state: z.literal('queued') })
+const implementingRunSchema = runBaseSchema.extend({
+  state: z.literal('implementing'),
+  execution: executionSchema,
+  budget: runBudgetSchema,
+})
+const terminalRunSchema = runBaseSchema.extend({
+  state: z.enum(['publishing', 'blocked', 'failed']),
+  execution: executionSchema,
+  budget: runBudgetSchema,
+  outcome: outcomeSchema,
+  completedAt: z.iso.datetime({ offset: true }),
+})
+const runSchema = z.discriminatedUnion('state', [queuedRunSchema, implementingRunSchema, terminalRunSchema])
+
 const stateSchema = z
   .object({
-    schemaVersion: z.literal(1),
+    schemaVersion: z.literal(2),
     revision: z.number().int().nonnegative(),
     nextSequence: z.number().int().positive(),
     runs: z.array(runSchema).max(100),
     acceptedIngress: z.array(z.string().min(1).max(512).regex(ID_PATTERN)).max(MAX_INGRESS_RECEIPTS),
+    budget: z.object({
+      reservedTokens: z.number().int().nonnegative(),
+      settledTokens: z.number().int().nonnegative(),
+      usageUncertain: z.boolean(),
+    }),
   })
   .superRefine((value, context) => {
     const identities = value.runs.map(runIdentityFromRun)
@@ -164,6 +299,35 @@ const stateSchema = z
     if (sequences.length > 0 && value.nextSequence <= Math.max(...sequences)) {
       addIntegrityIssue('next queue sequence must follow every retained run')
     }
+    const runReservations = value.runs.reduce(
+      (total, run) => total + (run.state === 'queued' ? 0 : run.budget.reservedTokens),
+      0,
+    )
+    if (runReservations !== value.budget.reservedTokens) {
+      addIntegrityIssue('deployment reservation must equal active run reservations')
+    }
+    const runSettlements = value.runs.reduce(
+      (total, run) => total + (run.state === 'queued' ? 0 : run.budget.settledTokens),
+      0,
+    )
+    if (runSettlements !== value.budget.settledTokens) {
+      addIntegrityIssue('deployment settlement must equal retained run settlements')
+    }
+    const uncertain = value.runs.some((run) => run.state !== 'queued' && run.budget.usageUncertain)
+    if (uncertain !== value.budget.usageUncertain) {
+      addIntegrityIssue('deployment usage uncertainty must match retained run uncertainty')
+    }
+    for (const run of value.runs) {
+      if (run.state === 'implementing' && (run.budget.settledTokens !== 0 || run.budget.usageUncertain)) {
+        addIntegrityIssue('implementing runs cannot carry settled or uncertain usage')
+      }
+      if (run.state === 'publishing' && run.outcome.kind !== 'verified') {
+        addIntegrityIssue('publishing runs require a verified outcome')
+      }
+      if ((run.state === 'blocked' || run.state === 'failed') && run.outcome.kind !== run.state) {
+        addIntegrityIssue('terminal lifecycle state must match its structured outcome')
+      }
+    }
   })
   .refine((value) => textEncoder.encode(JSON.stringify(value)).byteLength <= MAX_STATE_BYTES, {
     error: `admission state must not exceed ${String(MAX_STATE_BYTES)} UTF-8 bytes`,
@@ -173,7 +337,7 @@ type AdmissionState = z.infer<typeof stateSchema>
 
 const admissionDomainSpec = defineDomain({
   name: 'autopilot_admission',
-  version: 1,
+  version: 2,
   tables: {
     state: domainTable<typeof STATE_KEY, AdmissionState>(stateSchema),
   },
@@ -185,11 +349,12 @@ interface EligibleIssue {
 }
 
 const initialState: AdmissionState = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   revision: 0,
   nextSequence: 1,
   runs: [],
   acceptedIngress: [],
+  budget: { reservedTokens: 0, settledTokens: 0, usageUncertain: false },
 }
 
 declare module '@deepseek-ai/cordis' {
@@ -209,12 +374,19 @@ export class Admission extends Service {
   }
 
   async *[Service.init](): AsyncGenerator<() => Promise<void>, void, void> {
-    this.settings = this.ctx.settings.register(settingsNamespace('dsh-autopilot'), admissionSettingsSchema, {
+    this.settings = this.ctx.settings.register('dsh-autopilot', admissionSettingsSchema, {
       validate: (value) => {
         trackerProviderId(value.trackerProvider)
-        if (!Number.isInteger(value.maxQueued) || !Number.isInteger(value.maxBriefBytes)) {
+        if (
+          !Number.isInteger(value.maxQueued) ||
+          !Number.isInteger(value.maxBriefBytes) ||
+          !Number.isInteger(value.deploymentTokenCap) ||
+          !Number.isInteger(value.perRunTokenCap) ||
+          !Number.isInteger(value.runTokenAllowance)
+        ) {
           throw new TypeError('admission limits must be integers')
         }
+        if (value.executionMode === 'fixture') validateFixtureExecutionSettings(value)
       },
     })
     const domain = await this.ctx.storageDomain.open(admissionDomainSpec)
@@ -222,6 +394,8 @@ export class Admission extends Service {
     this.state = domain.table('state')
     if (this.state.get(STATE_KEY) === undefined) {
       await this.state.put(STATE_KEY, initialState)
+    } else {
+      await this.markInterruptedRunsForRecovery()
     }
   }
 
@@ -232,6 +406,134 @@ export class Admission extends Service {
   snapshot(): AdmissionSnapshot {
     const current = this.currentState()
     return snapshotOf(current)
+  }
+
+  /**
+   * Atomically claim the highest-priority queued run and reserve its configured fixture allowance.
+   * Returns undefined when the queue is empty. Fixture execution must be explicitly configured; cap or durable-write
+   * failures reject without claiming a run or changing the budget aggregate.
+   */
+  async claimNext(): Promise<ImplementingRun | undefined> {
+    const settings = this.currentSettings()
+    validateFixtureExecutionSettings(settings)
+    let claimed: ImplementingRun | undefined
+    await this.currentTable().update(STATE_KEY, (current) => {
+      if (current.budget.usageUncertain) {
+        throw new Error('deployment token usage is uncertain; reconcile it before dispatch')
+      }
+      const queued = current.runs
+        .filter((run): run is QueuedRun => run.state === 'queued')
+        .sort(
+          (left, right) =>
+            left.priorityRank - right.priorityRank ||
+            left.queueSequence - right.queueSequence ||
+            left.displayKey.localeCompare(right.displayKey),
+        )[0]
+      if (queued === undefined) return current
+      if (
+        current.budget.settledTokens + current.budget.reservedTokens + settings.runTokenAllowance >
+        settings.deploymentTokenCap
+      ) {
+        throw new Error('deployment token cap cannot cover the configured run allowance')
+      }
+
+      const next = structuredClone(current)
+      const index = next.runs.findIndex((run) => run.runId === queued.runId)
+      if (index < 0) throw new Error('queued run disappeared during its atomic claim')
+      claimed = {
+        ...queued,
+        state: 'implementing',
+        execution: executionFor(queued, settings),
+        budget: {
+          capTokens: settings.perRunTokenCap,
+          reservedTokens: settings.runTokenAllowance,
+          settledTokens: 0,
+          usageUncertain: false,
+        },
+      }
+      next.runs[index] = claimed
+      next.budget.reservedTokens += settings.runTokenAllowance
+      next.revision += 1
+      const parsed = stateSchema.parse(next)
+      assertStateSize(parsed)
+      return parsed
+    })
+    return claimed === undefined ? undefined : structuredClone(claimed)
+  }
+
+  /** Persist the exact Git facts established for a claimed run before an Agent is created. */
+  async recordWorktree(runId: RunId, git: GitExecutionSnapshot): Promise<ImplementingRun> {
+    const parsedGit = executionSchema.shape.git.unwrap().parse(git)
+    let recorded: ImplementingRun | undefined
+    await this.currentTable().update(STATE_KEY, (current) => {
+      const next = structuredClone(current)
+      const index = next.runs.findIndex((run) => run.runId === runId)
+      const run = next.runs[index]
+      if (run?.state !== 'implementing') throw new Error(`run "${runId}" is not implementing`)
+      if (run.execution.recovery !== undefined) throw new Error(`run "${runId}" requires explicit recovery`)
+      const nextRun: ImplementingRun = { ...run, execution: { ...run.execution, git: parsedGit } }
+      recorded = nextRun
+      next.runs[index] = nextRun
+      next.revision += 1
+      return stateSchema.parse(next)
+    })
+    if (recorded === undefined) throw new Error(`run "${runId}" worktree facts were not recorded`)
+    return structuredClone(recorded)
+  }
+
+  /** Atomically transition a claimed run to its structured terminal state and settle its reservation. */
+  async settle(runId: RunId, outcome: ExecutionOutcome, usage: RunUsageSettlement): Promise<TerminalRun> {
+    const parsedOutcome = outcomeSchema.parse(outcome) as ExecutionOutcome
+    let settled: TerminalRun | undefined
+    await this.currentTable().update(STATE_KEY, (current) => {
+      const next = structuredClone(current)
+      const index = next.runs.findIndex((run) => run.runId === runId)
+      const run = next.runs[index]
+      if (run?.state !== 'implementing') throw new Error(`run "${runId}" is not implementing`)
+      if (run.execution.git === undefined && parsedOutcome.kind === 'verified') {
+        throw new Error(`verified run "${runId}" has no recorded worktree facts`)
+      }
+      const usageKnown =
+        usage.kind === 'known' &&
+        Number.isSafeInteger(usage.tokens) &&
+        usage.tokens >= 0 &&
+        usage.tokens <= run.budget.reservedTokens &&
+        usage.tokens <= run.budget.capTokens
+      const reservedTokens = usageKnown ? 0 : run.budget.reservedTokens
+      const settledTokens = usageKnown ? usage.tokens : 0
+      const terminalOutcome: ExecutionOutcome = usageKnown
+        ? parsedOutcome
+        : {
+            kind: 'failed',
+            summary: 'Provider token usage could not be settled safely.',
+            evidence: [usage.kind === 'uncertain' ? usage.reason : 'reported usage exceeded the reserved allowance'],
+          }
+      const terminalRun: TerminalRun = {
+        ...run,
+        state: terminalOutcome.kind === 'verified' ? 'publishing' : terminalOutcome.kind,
+        execution: structuredClone(run.execution),
+        budget: {
+          ...run.budget,
+          reservedTokens,
+          settledTokens,
+          usageUncertain: !usageKnown,
+        },
+        outcome: terminalOutcome,
+        completedAt: new Date().toISOString(),
+      }
+      settled = terminalRun
+      next.runs[index] = terminalRun
+      if (usageKnown) {
+        next.budget.reservedTokens -= run.budget.reservedTokens
+        next.budget.settledTokens += usage.tokens
+      } else {
+        next.budget.usageUncertain = true
+      }
+      next.revision += 1
+      return stateSchema.parse(next)
+    })
+    if (settled === undefined) throw new Error(`run "${runId}" was not settled`)
+    return structuredClone(settled)
   }
 
   /**
@@ -366,6 +668,29 @@ export class Admission extends Service {
     if (current === undefined) throw new Error('admission state record is missing')
     return current
   }
+
+  private async markInterruptedRunsForRecovery(): Promise<void> {
+    await this.currentTable().update(STATE_KEY, (current) => {
+      if (!current.runs.some((run) => run.state === 'implementing' && run.execution.recovery === undefined)) {
+        return current
+      }
+      const interruptedAt = new Date().toISOString()
+      const next = structuredClone(current)
+      next.runs = next.runs.map((run) =>
+        run.state === 'implementing' && run.execution.recovery === undefined
+          ? {
+              ...run,
+              execution: {
+                ...run.execution,
+                recovery: { kind: 'required', reason: 'host-restart', interruptedAt },
+              },
+            }
+          : run,
+      )
+      next.revision += 1
+      return stateSchema.parse(next)
+    })
+  }
 }
 
 function evaluateIssue(
@@ -435,12 +760,27 @@ function runIdentity(providerId: TrackerProviderId, issue: EligibleIssue['issue'
   return JSON.stringify([providerId, issue.bindingId, issue.issueId, issue.readiness.generation])
 }
 
-function runIdentityFromRun(run: QueuedRun): string {
+function runIdentityFromRun(
+  run: Pick<AutopilotRun, 'providerId' | 'bindingId' | 'issueId' | 'readinessGeneration'>,
+): string {
   return JSON.stringify([run.providerId, run.bindingId, run.issueId, run.readinessGeneration])
 }
 
 function runId(identity: string): RunId {
   return `run_${createHash('sha256').update(identity).digest('hex').slice(0, 32)}` as RunId
+}
+
+function executionFor(run: QueuedRun, settings: AdmissionSettings): RunExecutionSnapshot {
+  const stableId = run.runId.slice('run_'.length)
+  return {
+    attempt: 1,
+    sessionId: sessionId(`autopilot-${run.runId}`),
+    targetRepository: settings.targetRepository,
+    baseBranch: settings.targetBaseBranch,
+    worktreePath: join(settings.managedWorktreeRoot, run.runId),
+    branch: `dsh-autopilot/${stableId}`,
+    startedAt: new Date().toISOString(),
+  }
 }
 
 function snapshotOf(state: AdmissionState): AdmissionSnapshot {
@@ -453,6 +793,38 @@ function snapshotOf(state: AdmissionState): AdmissionSnapshot {
         left.displayKey.localeCompare(right.displayKey),
     ),
     acceptedIngress: [...state.acceptedIngress],
+    budget: structuredClone(state.budget),
+  }
+}
+
+function validateFixtureExecutionSettings(settings: AdmissionSettings): void {
+  if (settings.executionMode !== 'fixture') {
+    throw new Error('dispatch is disabled; this slice accepts only explicit fixture execution')
+  }
+  if (!isAbsolute(settings.targetRepository) || !isAbsolute(settings.managedWorktreeRoot)) {
+    throw new TypeError('fixture target repository and managed worktree root must be absolute paths')
+  }
+  if (
+    !/^[a-zA-Z0-9][a-zA-Z0-9._/-]*$/.test(settings.targetBaseBranch) ||
+    settings.targetBaseBranch.includes('..') ||
+    settings.targetBaseBranch.includes('//') ||
+    settings.targetBaseBranch.endsWith('/') ||
+    settings.targetBaseBranch.endsWith('.lock')
+  ) {
+    throw new TypeError('fixture target base branch is invalid')
+  }
+  for (const [name, value] of [
+    ['deploymentTokenCap', settings.deploymentTokenCap],
+    ['perRunTokenCap', settings.perRunTokenCap],
+    ['runTokenAllowance', settings.runTokenAllowance],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value <= 0) throw new TypeError(`${name} must be a positive safe integer`)
+  }
+  if (settings.runTokenAllowance > settings.perRunTokenCap) {
+    throw new TypeError('run token allowance must not exceed the per-run token cap')
+  }
+  if (settings.runTokenAllowance > settings.deploymentTokenCap) {
+    throw new TypeError('run token allowance must not exceed the deployment token cap')
   }
 }
 

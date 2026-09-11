@@ -1,2 +1,5 @@
 allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  koffi: true
   lefthook: true
+  node-pty: true
