@@ -27,7 +27,7 @@
     "test": "vitest run",
     "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
     "hooks:install": "lefthook install",
-    "verify:package": "node scripts/verify-package.mjs .artifacts/dsh-autopilot-0.0.0.tgz",
+    "verify:package": "node scripts/verify-package.mjs",
     "prepare": "pnpm run build",
     "prepack": "pnpm run lint && pnpm run typecheck && pnpm run test"
   },
@@ -56,11 +56,10 @@
     }
   },
   "dependencies": {
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/cordis": "^4.0.2"
   },
   "devDependencies": {
     "@biomejs/biome": "latest",
-    "@deepseek-ai/cordis": "latest",
     "lefthook": "latest",
     "typescript": "latest",
     "vitest": "latest"

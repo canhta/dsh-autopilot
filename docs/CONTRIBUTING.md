@@ -45,7 +45,7 @@ For code, follow the engineering guide's [verification requirements](engineering
 pnpm run check
 ```
 
-Use `pnpm test -- tests/<name>.spec.ts` while iterating on one behavior. Package or export changes also require `mkdir -p .artifacts`, `pnpm pack --pack-destination .artifacts`, and `pnpm run verify:package`; the last command installs the tarball into a disposable DSH profile and verifies the effective bundle layer. Report exactly what ran; do not substitute upstream DSH tests for this plugin's integration evidence. Live-provider tests require explicitly authorized resources and spending.
+Use `pnpm test -- tests/<name>.spec.ts` while iterating on one behavior. Package or export changes also require `mkdir -p .artifacts`, `pnpm pack --pack-destination .artifacts`, and `pnpm run verify:package`; the last command installs the tarball into a disposable DSH profile, verifies the effective layer, boots the built Host entry, and runs the missing-entry negative control. Report exactly what ran; do not substitute upstream DSH tests for this plugin's integration evidence. Live-provider tests require explicitly authorized resources and spending.
 
 Biome is the repository formatter and linter. Run `pnpm run format` to apply safe formatting and lint fixes. Lefthook runs Biome on staged JavaScript, TypeScript and JSON before commit, then runs the complete local gate before push.
 
