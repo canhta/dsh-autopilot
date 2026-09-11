@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
 import { describe, expect, it } from 'vitest'
 import * as Autopilot from '../src/index.js'
-import { disposeContext, mountExecutionHostServices } from './dsh-fixtures.js'
+import { disposeContext, mountExecutionHostServices, mountHostServices } from './dsh-fixtures.js'
 
 describe('DSH plugin entry', () => {
   it('mounts its public services through named Cordis exports and disposes cleanly', async () => {
@@ -47,5 +47,19 @@ describe('DSH plugin entry', () => {
     expect(ctx.get('admission')).toBeUndefined()
 
     await fiber.dispose()
+  })
+
+  it('keeps tracker admission available while execution-only services are absent', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'dsh-autopilot-plugin-admission-'))
+    const ctx = await mountHostServices(join(directory, 'state.sqlite'))
+    const fiber = await ctx.plugin(Autopilot)
+
+    expect(ctx.tracker).toBeDefined()
+    expect(ctx.admission).toBeDefined()
+    expect(ctx.get('dispatch')).toBeUndefined()
+
+    await fiber.dispose()
+    await disposeContext(ctx)
+    await rm(directory, { recursive: true, force: true })
   })
 })

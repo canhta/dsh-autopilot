@@ -10,6 +10,7 @@ import {
   type StreamChunk,
   ToolCallId,
 } from '@deepseek-ai/dsh-llm'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 import { afterEach, describe, expect, it } from 'vitest'
 import { Admission, type PausedActiveRun } from '../src/admission.js'
 import { Dispatch, FIXTURE_MODEL, FIXTURE_PROVIDER } from '../src/dispatch.js'
@@ -22,7 +23,14 @@ import {
   trackerCommentId,
   trackerIssueId,
 } from '../src/tracker.js'
-import { Deferred, disposeContext, fixtureExecutionSettings, mountExecutionHostServices } from './dsh-fixtures.js'
+import {
+  Deferred,
+  disposeContext,
+  executionAgentRegistryFiber,
+  fixtureExecutionSettings,
+  mountExecutionHostServices,
+  remountExecutionAgentRegistry,
+} from './dsh-fixtures.js'
 
 const temporaryDirectories: string[] = []
 const contexts: Context[] = []
@@ -49,6 +57,7 @@ class ControlledAdapter extends LlmAdapter {
       | 'oversized' = 'valid',
     private readonly beforeFirstResponse?: () => Promise<void>,
     private readonly reportOnResume = false,
+    private readonly firstUnapprovedTool?: string,
   ) {
     super()
   }
@@ -62,6 +71,11 @@ class ControlledAdapter extends LlmAdapter {
     this.response += 1
     if (this.response === 1) await this.beforeFirstResponse?.()
 
+    if (this.response === 1 && this.firstUnapprovedTool !== undefined) {
+      yield* this.toolResponse(`unapproved-${String(this.response)}`, this.firstUnapprovedTool, {})
+      return
+    }
+
     if (this.reportMode === 'missing') {
       yield* this.textResponse()
       return
@@ -69,6 +83,7 @@ class ControlledAdapter extends LlmAdapter {
 
     if (
       this.response === 1 ||
+      (this.firstUnapprovedTool !== undefined && this.response === 2) ||
       (this.reportOnResume && this.response === 3) ||
       (this.reportMode === 'multiple' && this.response === 2)
     ) {
@@ -87,14 +102,14 @@ class ControlledAdapter extends LlmAdapter {
         evidence: this.reportMode === 'malformed' ? [1] : ['controlled-model', 'clean-worktree'],
       }
       if (this.reportKind === 'verified') Object.assign(report, { gitHead: head, gitStatus: status })
-      yield* this.toolResponse(`report-${String(this.response)}`, report)
+      yield* this.toolResponse(`report-${String(this.response)}`, 'autopilot_report', report)
       return
     }
 
     yield* this.textResponse()
   }
 
-  private *toolResponse(id: string, report: Record<string, unknown>): Iterable<StreamChunk> {
+  private *toolResponse(id: string, name: string, args: Record<string, unknown>): Iterable<StreamChunk> {
     yield { type: 'block-start', index: 0, blockType: 'tool-call' }
     yield {
       type: 'block-end',
@@ -102,8 +117,8 @@ class ControlledAdapter extends LlmAdapter {
       block: {
         type: 'tool-call',
         id: ToolCallId(id),
-        name: 'autopilot_report',
-        arguments: JSON.stringify(report),
+        name,
+        arguments: JSON.stringify(args),
       },
     }
     if (this.usageMode !== 'missing') {
@@ -355,6 +370,126 @@ describe('durable fixture dispatch', () => {
     const [stoppedRun, paused] = await Promise.all([stopped, dispatched])
     expect(stoppedRun).toEqual(paused)
     expect(paused).toMatchObject({ state: 'paused', pause: { reason: 'operator', operatorHold: true } })
+  })
+
+  it('checkpoints active work before required-service withdrawal and preserves uncertainty across remount', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-service-remount-'))
+    temporaryDirectories.push(root)
+    const requestStarted = new Deferred<void>()
+    const releaseRequest = new Deferred<void>()
+    const adapter = new ControlledAdapter('verified', 'known', 'valid', async () => {
+      requestStarted.resolve()
+      await releaseRequest.promise
+    })
+    const ctx = await bootFixture(root, adapter)
+    const retiringDispatch = ctx.dispatch
+    const dispatched = retiringDispatch.dispatchNext()
+    await requestStarted.promise
+
+    const withdrawing = executionAgentRegistryFiber(ctx).dispose()
+    await expect.poll(() => ctx.admission.snapshot().runs[0]?.state).toBe('pausing')
+    expect(ctx.admission.snapshot()).toMatchObject({
+      scheduler: { mode: 'enabled' },
+      runs: [{ state: 'pausing', pause: { reason: 'service-withdrawal', operatorHold: false } }],
+    })
+
+    releaseRequest.resolve()
+    const paused = await dispatched
+    await withdrawing
+
+    expect(paused).toMatchObject({
+      state: 'paused',
+      pause: { reason: 'service-withdrawal', operatorHold: false, lastCompletedPhase: 'agent-quiescent' },
+    })
+    if (paused === undefined || paused.state !== 'paused' || paused.pause.kind !== 'active') {
+      throw new Error('required-service withdrawal did not produce an allocated pause')
+    }
+    expect(ctx.get('dispatch')).toBeUndefined()
+    expect(ctx.get('agents')).toBeUndefined()
+    await expect(retiringDispatch.dispatchNext()).rejects.toThrow(/unavailable.*services are changing/i)
+
+    await remountExecutionAgentRegistry(ctx)
+    await expect.poll(() => ctx.get('dispatch')).toBeDefined()
+    await expect(ctx.dispatch.dispatchNext()).rejects.toThrow(/token usage is uncertain/)
+
+    expect(ctx.admission.snapshot().runs).toHaveLength(1)
+    expect(ctx.admission.snapshot().runs[0]).toMatchObject({
+      runId: paused.runId,
+      state: 'paused',
+      budget: { usageUncertain: true },
+    })
+    expect(ctx.agents.roots()).toEqual([])
+  })
+
+  it('does not strand a claimed run when service withdrawal overlaps Agent creation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-service-setup-'))
+    temporaryDirectories.push(root)
+    const ctx = await bootFixture(root, new ControlledAdapter())
+    const createStarted = new Deferred<void>()
+    const releaseCreate = new Deferred<void>()
+    const createAgent = ctx.agents.create.bind(ctx.agents)
+    ctx.agents.create = async (options) => {
+      createStarted.resolve()
+      await releaseCreate.promise
+      return await createAgent(options)
+    }
+    const dispatching = ctx.dispatch.dispatchNext()
+    await createStarted.promise
+
+    const withdrawing = executionAgentRegistryFiber(ctx).dispose()
+    await expect.poll(() => ctx.get('dispatch')).toBeUndefined()
+    expect(ctx.admission.snapshot().runs[0]).toMatchObject({ state: 'implementing' })
+
+    releaseCreate.resolve()
+    const settled = await Promise.allSettled([dispatching, withdrawing])
+
+    const run = ctx.admission.snapshot().runs[0]
+    expect(settled.map((result) => result.status)).toEqual(['fulfilled', 'fulfilled'])
+    expect(run?.state).not.toBe('pausing')
+    expect(ctx.get('agents')).toBeUndefined()
+  })
+
+  it('fences late settlement and resumes the same run after the execution service remounts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-late-remount-'))
+    temporaryDirectories.push(root)
+    const adapter = new ControlledAdapter('verified', 'known', 'valid', undefined, true)
+    const ctx = await bootFixture(root, adapter)
+    const recordWorktree = ctx.admission.recordWorktree.bind(ctx.admission)
+    let recordCount = 0
+    let withdrawing: Promise<void> | undefined
+    ctx.admission.recordWorktree = async (runId, git) => {
+      const recorded = await recordWorktree(runId, git)
+      recordCount += 1
+      if (recordCount === 2) {
+        withdrawing = executionAgentRegistryFiber(ctx).dispose()
+        await expect.poll(() => ctx.admission.snapshot().runs[0]?.state).toBe('pausing')
+      }
+      return recorded
+    }
+
+    const paused = await ctx.dispatch.dispatchNext()
+    await withdrawing
+
+    expect(paused).toMatchObject({
+      state: 'paused',
+      pause: { reason: 'service-withdrawal', operatorHold: false },
+      budget: { reservedTokens: 0, settledTokens: 18, usageUncertain: false },
+    })
+    if (paused === undefined || paused.state !== 'paused') throw new Error('expected a late-settlement pause')
+    expect(ctx.get('dispatch')).toBeUndefined()
+
+    await remountExecutionAgentRegistry(ctx)
+    await expect.poll(() => ctx.get('dispatch')).toBeDefined()
+    const completed = await ctx.dispatch.dispatchNext()
+
+    expect(completed).toMatchObject({
+      runId: paused.runId,
+      state: 'publishing',
+      execution: { attempt: 2, sessionId: paused.execution.sessionId },
+      budget: { settledTokens: 36, usageUncertain: false },
+    })
+    expect(ctx.admission.snapshot().runs).toHaveLength(1)
+    expect(ctx.agents.roots()).toEqual([])
   })
 
   it('lets a pause checkpoint win a race with terminal settlement', async () => {
@@ -782,6 +917,40 @@ describe('durable fixture dispatch', () => {
     await expect(ctx.sessionPersistence.stat(completed.execution.sessionId)).resolves.toMatchObject({
       header: { id: completed.execution.sessionId },
     })
+  })
+
+  it('rejects a renamed Host-global delegation tool before it can create a descendant', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-delegation-denied-'))
+    temporaryDirectories.push(root)
+    const toolName = 'configured_delegation_name'
+    const adapter = new ControlledAdapter('verified', 'known', 'valid', undefined, false, toolName)
+    const ctx = await bootFixture(root, adapter)
+    let delegated = false
+    ctx.tools.register(
+      defineTool({
+        name: toolName,
+        description: 'A fixture stand-in for a deployment-configured delegation tool.',
+        parameters: {},
+        output: {
+          schema: { type: 'string' },
+          render: () => [{ type: 'text', text: 'delegated' }],
+        },
+        execute() {
+          delegated = true
+          return Promise.resolve('delegated')
+        },
+      }),
+    )
+
+    const completed = await ctx.dispatch.dispatchNext()
+
+    expect(completed).toMatchObject({ state: 'publishing', budget: { usageUncertain: false } })
+    expect(adapter.requests).toHaveLength(3)
+    expect(
+      adapter.requests.every((request) => request.tools?.map((tool) => tool.name).join(',') === 'autopilot_report'),
+    ).toBe(true)
+    expect(delegated).toBe(false)
+    expect(ctx.agents.list()).toEqual([])
   })
 
   it.each([

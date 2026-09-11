@@ -4,7 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Service } from '@deepseek-ai/cordis'
 import type { AgentHandle } from '@deepseek-ai/dsh-agent'
 import { createUserMessage, type GenerateOptions, type StreamChunk, type TokenUsage } from '@deepseek-ai/dsh-llm'
-import type { SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persistence'
+import { SessionHandleClosedError, type SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persistence'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { Workspace } from '@deepseek-ai/dsh-workspace'
@@ -57,6 +57,16 @@ interface ActiveExecution {
   complete(): void
 }
 
+interface PreparedResume {
+  readonly run: ImplementingRun
+  readonly active: ActiveExecution
+  readonly handle: AgentHandle
+  readonly usage: UsageRecorder
+  readonly report: ReportRecorder
+  readonly workspace: Workspace
+  readonly baseHead: string
+}
+
 type DispatchResult = TerminalRun | PausedActiveRun
 
 /** Fixture-only durable dispatcher built from the DSH Agent, Session, Workspace, Tool, LLM, and Subprocess seams. */
@@ -73,9 +83,27 @@ export class Dispatch extends Service {
   ]
 
   private readonly active = new Map<RunId, ActiveExecution>()
+  private readonly starts = new Set<Promise<void>>()
+  private accepting = false
 
   constructor(ctx: Context) {
     super(ctx, 'dispatch')
+  }
+
+  async *[Service.init](): AsyncGenerator<() => Promise<void>, void, void> {
+    this.accepting = true
+    yield async () => {
+      this.accepting = false
+      await Promise.all([...this.starts])
+      const owned = [...this.active.values()]
+      const pausingRunIds = await this.ctx.admission.requestServiceWithdrawalPause()
+      const settled = await Promise.allSettled([
+        ...pausingRunIds.map((runId) => this.pauseOwnedExecution(runId, 'required execution service withdrawn')),
+        ...owned.map((execution) => execution.completion),
+      ])
+      const failures = settled.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []))
+      if (failures.length > 0) throw new AggregateError(failures, 'dispatcher withdrawal did not quiesce cleanly')
+    }
   }
 
   /**
@@ -87,6 +115,7 @@ export class Dispatch extends Service {
    * operation accepts no caller cancellation signal.
    */
   async dispatchNext(): Promise<DispatchResult | undefined> {
+    this.assertAccepting()
     const snapshot = this.ctx.admission.snapshot()
     if (snapshot.scheduler.mode === 'enabled') {
       const continuation = snapshot.runs.find(
@@ -95,13 +124,25 @@ export class Dispatch extends Service {
       )
       if (continuation !== undefined) return await this.resumePaused(continuation.runId, 'scheduler')
     }
-    const claimed = await this.ctx.admission.claimNext()
-    if (claimed === undefined) return undefined
-    const active = activeExecution()
-    this.active.set(claimed.runId, active)
+    const finishStart = this.beginStart()
+    let claimed: ImplementingRun | undefined
+    let active: ActiveExecution | undefined
     try {
-      return await this.executeClaimed(claimed, active)
+      claimed = await this.ctx.admission.claimNext()
+      if (claimed === undefined) {
+        finishStart()
+        return undefined
+      }
+      active = activeExecution()
+      this.active.set(claimed.runId, active)
+    } catch (error) {
+      finishStart()
+      throw error
+    }
+    try {
+      return await this.executeClaimed(claimed, active, finishStart)
     } finally {
+      finishStart()
       this.active.delete(claimed.runId)
       active.complete()
     }
@@ -113,6 +154,7 @@ export class Dispatch extends Service {
    * and keeps its reservation while this operation waits. Recovered runs without a live owner remain explicit recovery.
    */
   async disableScheduler(): Promise<AdmissionSnapshot> {
+    this.assertAccepting()
     const requested = await this.ctx.admission.requestSchedulerDisable()
     await Promise.all(requested.pausingRunIds.map((runId) => this.pauseOwnedExecution(runId, 'scheduler disabled')))
     return this.ctx.admission.snapshot()
@@ -123,6 +165,7 @@ export class Dispatch extends Service {
    * Autopilot checkpoint are durable. Queued work must use `Admission.holdQueued`; absent live ownership rejects.
    */
   async stopRun(runId: RunId): Promise<PausedActiveRun> {
+    this.assertAccepting()
     const active = this.active.get(runId)
     if (active === undefined) throw new Error(`run "${runId}" has no live execution owner`)
     const requested = await this.ctx.admission.requestRunPause(runId)
@@ -141,10 +184,39 @@ export class Dispatch extends Service {
    * pause. The operation owns the resumed root through disposal and accepts no caller cancellation signal.
    */
   async resumeRun(runId: RunId): Promise<DispatchResult> {
+    this.assertAccepting()
     return await this.resumePaused(runId, 'operator')
   }
 
   private async resumePaused(runId: RunId, authorization: ActiveResumeAuthorization): Promise<DispatchResult> {
+    const finishStart = this.beginStart()
+    let prepared: PreparedResume
+    try {
+      prepared = await this.preparePausedResume(runId, authorization)
+    } finally {
+      finishStart()
+    }
+    const { run, active, handle, usage, report, baseHead, workspace } = prepared
+    try {
+      return await this.executeOwnedTurn(
+        run,
+        active,
+        handle,
+        usage,
+        report,
+        baseHead,
+        continuationPrompt(run),
+        'pause requested before continuation',
+        'Fixture continuation failed.',
+        workspace,
+      )
+    } finally {
+      this.active.delete(runId)
+      active.complete()
+    }
+  }
+
+  private async preparePausedResume(runId: RunId, authorization: ActiveResumeAuthorization): Promise<PreparedResume> {
     const snapshot = this.ctx.admission.snapshot()
     if (snapshot.scheduler.mode !== 'enabled') throw new Error('scheduler must be enabled to resume a run')
     if (snapshot.budget.usageUncertain) {
@@ -205,6 +277,7 @@ export class Dispatch extends Service {
         maxTokens: continuationAllowance,
       },
       setup: (agentCtx) => {
+        configureFixtureTools(agentCtx)
         registerUsageRecorder(agentCtx, paused, usage)
         agentCtx.tools.register(createReportTool(report))
       },
@@ -220,23 +293,7 @@ export class Dispatch extends Service {
     const active = activeExecution()
     active.handle = handle
     this.active.set(runId, active)
-    try {
-      return await this.executeOwnedTurn(
-        resumed,
-        active,
-        handle,
-        usage,
-        report,
-        retainedGit.baseHead,
-        continuationPrompt(resumed),
-        'pause requested before continuation',
-        'Fixture continuation failed.',
-        workspace,
-      )
-    } finally {
-      this.active.delete(runId)
-      active.complete()
-    }
+    return { run: resumed, active, handle, usage, report, workspace, baseHead: retainedGit.baseHead }
   }
 
   private async pauseOwnedExecution(runId: RunId, reason: string): Promise<void> {
@@ -266,7 +323,31 @@ export class Dispatch extends Service {
     throw new Error(message)
   }
 
-  private async executeClaimed(claimed: ImplementingRun, active: ActiveExecution): Promise<DispatchResult> {
+  private assertAccepting(): void {
+    if (!this.accepting) throw new Error('dispatcher is unavailable while its required services are changing')
+  }
+
+  private beginStart(): () => void {
+    this.assertAccepting()
+    let resolve: (() => void) | undefined
+    const barrier = new Promise<void>((settled) => {
+      resolve = settled
+    })
+    this.starts.add(barrier)
+    let finished = false
+    return () => {
+      if (finished) return
+      finished = true
+      this.starts.delete(barrier)
+      resolve?.()
+    }
+  }
+
+  private async executeClaimed(
+    claimed: ImplementingRun,
+    active: ActiveExecution,
+    finishStart: () => void,
+  ): Promise<DispatchResult> {
     let run: ImplementingRun | PausingRun = claimed
     const usage: UsageRecorder = { usage: [], requests: 0 }
     const report: ReportRecorder = {}
@@ -300,11 +381,13 @@ export class Dispatch extends Service {
           maxTokens: run.budget.capTokens,
         },
         setup: (agentCtx) => {
+          configureFixtureTools(agentCtx)
           registerUsageRecorder(agentCtx, run, usage)
           agentCtx.tools.register(createReportTool(report))
         },
       })
       active.handle = handle
+      finishStart()
     } catch (error) {
       return await this.settleExecutionFailure(run, git, usage, error, 'Fixture dispatch failed.')
     }
@@ -337,6 +420,7 @@ export class Dispatch extends Service {
   ): Promise<DispatchResult> {
     let git = run.execution.git
     let rootQuiescent = false
+    let rootDisposed = false
     let sessionDurable = false
     let finalGitObserved = false
     try {
@@ -364,6 +448,7 @@ export class Dispatch extends Service {
         sessionDurable = true
       } finally {
         await handle.dispose()
+        rootDisposed = true
       }
 
       git = await inspectGit(this.ctx.subprocess, run.execution.worktreePath, baseHead)
@@ -374,9 +459,10 @@ export class Dispatch extends Service {
       }
       return await this.ctx.admission.settle(run.runId, validatedOutcome(report, git), usageSettlement(usage))
     } catch (error) {
+      const durableProviderTeardown = rootDisposed && error instanceof SessionHandleClosedError
       return await this.settleExecutionFailure(run, git, usage, error, failureSummary, {
         rootQuiescent,
-        sessionDurable,
+        sessionDurable: sessionDurable || durableProviderTeardown,
         finalGitObserved,
       })
     }
@@ -527,6 +613,11 @@ function createReportTool(recorder: ReportRecorder) {
       return 'accepted' as const
     },
   })
+}
+
+function configureFixtureTools(agentCtx: Context): void {
+  // This controlled execution profile cannot own or account for delegated descendants, so delegation fails closed.
+  agentCtx.tools.restrict({ allow: [] })
 }
 
 function registerUsageRecorder(

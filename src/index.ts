@@ -4,17 +4,7 @@ import { Dispatch } from './dispatch.js'
 import { Tracker } from './tracker.js'
 
 export const name = 'dsh-autopilot'
-export const inject = [
-  'settings',
-  'storageDomain',
-  'agents',
-  'sessions',
-  'sessionPersistence',
-  'workspaceRegistry',
-  'tools',
-  'llm',
-  'subprocess',
-]
+export const inject = ['settings', 'storageDomain']
 
 export async function apply(ctx: Context): Promise<void> {
   await ctx.plugin(Tracker)

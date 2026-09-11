@@ -1118,13 +1118,13 @@ describe('admission service seam', () => {
     await disposeTrackedContext(ctx)
   })
 
-  it('fails closed when a version-4 durable admission record is reopened', async () => {
+  it('fails closed when a version-5 durable admission record is reopened', async () => {
     const path = await databasePath()
     const first = await boot(path, [candidate()])
     await first.ctx.admission.reconcile({ source: 'startup' })
     await disposeTrackedContext(first.ctx)
     rewriteStoredState(path, (state) => {
-      state.schemaVersion = 4
+      state.schemaVersion = 5
     })
 
     const ctx = trackContext(

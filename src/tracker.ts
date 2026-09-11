@@ -277,6 +277,12 @@ export class Tracker extends Service {
         `tracker provider "${registered.provider.id}" failed to read candidates`,
       )
     }
+    if (!registered.accepting) {
+      throw new TrackerProviderError(
+        'provider-unavailable',
+        `tracker provider "${registered.provider.id}" was withdrawn`,
+      )
+    }
     const parsed = candidatePageSchema.safeParse(page)
     if (!parsed.success) {
       throw new TrackerProviderError(

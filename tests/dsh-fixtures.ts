@@ -1,4 +1,4 @@
-import { Context } from '@deepseek-ai/cordis'
+import { Context, type Fiber } from '@deepseek-ai/cordis'
 import AgentRegistry from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import Credentials, {
@@ -104,6 +104,8 @@ export class MemoryCredentials extends Credentials {
   }
 }
 
+const agentRegistryFibers = new WeakMap<Context, Fiber>()
+
 export async function mountHostServices(
   databasePath: string,
   settings: Record<string, unknown> = {},
@@ -127,12 +129,24 @@ export async function mountExecutionHostServices(
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt, { personaPrefix: '' })
   await ctx.plugin(ToolRuntime)
-  await ctx.plugin(AgentRegistry)
+  agentRegistryFibers.set(ctx, await ctx.plugin(AgentRegistry))
   await ctx.plugin(JsonlSessionPersistence, { root: sessionRoot, compression: 'none' })
   await ctx.plugin(AgentLoop, { agents: [] })
   await ctx.plugin(WorkspaceRegistry)
   await ctx.plugin(LocalSubprocessRuntime)
   return ctx
+}
+
+export function executionAgentRegistryFiber(ctx: Context): Fiber {
+  const fiber = agentRegistryFibers.get(ctx)
+  if (fiber === undefined) throw new Error('execution Agent registry is not mounted for this fixture Context')
+  return fiber
+}
+
+export async function remountExecutionAgentRegistry(ctx: Context): Promise<Fiber> {
+  const fiber = await ctx.plugin(AgentRegistry)
+  agentRegistryFibers.set(ctx, fiber)
+  return fiber
 }
 
 export function fixtureExecutionSettings(

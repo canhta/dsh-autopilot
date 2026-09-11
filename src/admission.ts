@@ -102,7 +102,7 @@ export interface PausedQueuedRun extends Omit<QueuedRun, 'state' | 'queueClass'>
   }
 }
 
-export type ActivePauseReason = 'operator' | 'scheduler'
+export type ActivePauseReason = 'operator' | 'scheduler' | 'service-withdrawal'
 export type ActiveResumeAuthorization = 'operator' | 'scheduler'
 
 export interface ActivePauseSnapshot {
@@ -344,7 +344,7 @@ const implementingRunSchema = runBaseSchema.extend({
 })
 const activePauseSchema = z.object({
   kind: z.literal('active'),
-  reason: z.enum(['operator', 'scheduler']),
+  reason: z.enum(['operator', 'scheduler', 'service-withdrawal']),
   operatorHold: z.boolean(),
   continuationTarget: z.literal('implementing'),
   requestedAt: z.iso.datetime({ offset: true }),
@@ -393,7 +393,7 @@ const schedulerSchema = z.object({
 
 const stateSchema = z
   .object({
-    schemaVersion: z.literal(5),
+    schemaVersion: z.literal(6),
     revision: z.number().int().nonnegative(),
     nextSequence: z.number().int().positive(),
     runs: z.array(runSchema).max(100),
@@ -483,7 +483,7 @@ type AdmissionState = z.infer<typeof stateSchema>
 
 const admissionDomainSpec = defineDomain({
   name: 'autopilot_admission',
-  version: 5,
+  version: 6,
   tables: {
     state: domainTable<typeof STATE_KEY, AdmissionState>(stateSchema),
   },
@@ -496,7 +496,7 @@ interface EligibleIssue {
 
 function initialState(): AdmissionState {
   return {
-    schemaVersion: 5,
+    schemaVersion: 6,
     revision: 0,
     nextSequence: 1,
     runs: [],
@@ -609,6 +609,33 @@ export class Admission extends Service {
       return stateSchema.parse(next)
     })
     return { snapshot: snapshotOf(committed), pausingRunIds: [...pausingRunIds] }
+  }
+
+  /**
+   * Atomically move implementing runs to `pausing` before the dispatcher loses a required execution service. Scheduler
+   * mode and existing operator/scheduler pause intent are retained. The returned ids identify every pausing execution
+   * whose retiring dispatcher owner must cancel and checkpoint before its disposer completes.
+   */
+  async requestServiceWithdrawalPause(): Promise<RunId[]> {
+    let pausingRunIds: RunId[] = []
+    await this.currentTable().update(STATE_KEY, (current) => {
+      const requestedAt = new Date().toISOString()
+      const next = structuredClone(current)
+      next.runs = next.runs.map((run) =>
+        run.state === 'implementing'
+          ? {
+              ...run,
+              state: 'pausing' as const,
+              pause: activePause('service-withdrawal', requestedAt),
+            }
+          : run,
+      )
+      pausingRunIds = next.runs.filter((run): run is PausingRun => run.state === 'pausing').map((run) => run.runId)
+      if (!current.runs.some((run) => run.state === 'implementing')) return current
+      next.revision += 1
+      return stateSchema.parse(next)
+    })
+    return [...pausingRunIds]
   }
 
   /**

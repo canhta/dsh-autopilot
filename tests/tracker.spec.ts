@@ -10,6 +10,7 @@ import {
   trackerIssueId,
   trackerProviderId,
 } from '../src/tracker.js'
+import { Deferred } from './dsh-fixtures.js'
 
 const fixtureIssue = {
   bindingId: trackerBindingId('fixture:project'),
@@ -98,6 +99,40 @@ describe('tracker service seam', () => {
 
     expect(observedAbort).toBe(true)
     await expect(read).rejects.toMatchObject({ code: 'provider-unavailable' })
+  })
+
+  it('fences a late successful result before withdrawal, remount, and consumer state mutation', async () => {
+    const ctx = new Context()
+    await ctx.plugin(Tracker)
+    const readStarted = new Deferred<void>()
+    const releaseRead = new Deferred<void>()
+    let consumerWrites = 0
+    const dispose = ctx.tracker.register(
+      fixtureProvider({
+        readCandidates: async () => {
+          readStarted.resolve()
+          await releaseRead.promise
+          return { issues: [fixtureIssue] }
+        },
+      }),
+    )
+    const read = ctx.tracker.withProvider(trackerProviderId('fixture'), async (reader) => {
+      const page = await reader.readCandidates()
+      consumerWrites += 1
+      return page
+    })
+    await readStarted.promise
+
+    const withdrawing = dispose()
+    releaseRead.resolve()
+
+    await expect(read).rejects.toMatchObject({ code: 'provider-unavailable' })
+    await withdrawing
+    expect(consumerWrites).toBe(0)
+    const disposeReplacement = ctx.tracker.register(fixtureProvider())
+    await expect(ctx.tracker.readCandidates(trackerProviderId('fixture'))).resolves.toEqual({ issues: [fixtureIssue] })
+    expect(consumerWrites).toBe(0)
+    await disposeReplacement()
   })
 
   it('does not relabel consumer failures as tracker failures', async () => {
