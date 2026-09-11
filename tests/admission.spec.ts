@@ -419,6 +419,10 @@ describe('admission service seam', () => {
       queuedAt: expect.any(String),
       queueSequence: 1,
     })
+    expect(ctx.admission.snapshot().runs.map((run) => [run.displayKey, run.state, run.queueClass])).toEqual([
+      ['FIX-RESUME', 'queued', 'resumption'],
+      ['FIX-NEW', 'queued', 'new'],
+    ])
     const claimed = await ctx.admission.claimNext()
     expect(claimed).toMatchObject({
       runId: 'run_2a43c5f5acb4d19acd9c606915e90a79',
@@ -558,6 +562,52 @@ describe('admission service seam', () => {
         },
       ],
     })
+  })
+
+  it('rechecks current Brief policy after tracker revalidation without clearing the hold', async () => {
+    const issue = candidate({
+      comments: [briefComment({ body: validBrief.replace('Issue #6 defines the product slice.', 'x'.repeat(1500)) })],
+    })
+    const { ctx, disposeProvider } = await boot(await databasePath(), [issue])
+    await ctx.admission.reconcile({ source: 'manual' })
+    const admitted = ctx.admission.snapshot().runs[0]
+    if (admitted?.state !== 'queued') throw new Error('expected a queued run')
+    await ctx.admission.holdQueued(admitted.runId)
+    await disposeProvider()
+
+    let signalReadStarted: (() => void) | undefined
+    const readStarted = new Promise<void>((resolve) => {
+      signalReadStarted = resolve
+    })
+    let releaseRead: (() => void) | undefined
+    const readReleased = new Promise<void>((resolve) => {
+      releaseRead = resolve
+    })
+    ctx.tracker.register(
+      createFixtureTrackerProvider({
+        issues: [issue],
+        readCandidates: async () => {
+          signalReadStarted?.()
+          await readReleased
+          return { issues: [issue] }
+        },
+      }),
+    )
+
+    const resume = ctx.admission.resumeRun(admitted.runId)
+    await readStarted
+    await ctx.settings.update('dsh-autopilot', { maxBriefBytes: 1024 })
+    releaseRead?.()
+    await expect(resume).rejects.toThrow(/Brief|eligibility|policy/i)
+
+    expect(ctx.admission.snapshot().runs).toMatchObject([
+      {
+        runId: admitted.runId,
+        state: 'paused',
+        queueClass: 'resumption',
+        pause: { reason: 'operator', operatorHold: true },
+      },
+    ])
   })
 
   it('keeps dispatch disabled unless the fixture mode and positive limits are explicit', async () => {

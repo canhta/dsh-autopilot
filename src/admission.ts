@@ -468,7 +468,7 @@ export class Admission extends Service {
   }
 
   /**
-   * Return a detached, priority-ordered view of the initialized durable aggregate.
+   * Return a detached view with active work first, then queued work in dispatch order, then retained inactive runs.
    * Throws if the service has not finished initialization; it performs no I/O and has no cancellation point.
    */
   snapshot(): AdmissionSnapshot {
@@ -583,15 +583,22 @@ export class Admission extends Service {
         if (current.budget.usageUncertain) {
           throw new Error('deployment token usage is uncertain; reconcile it before resuming')
         }
-        if (trackerProviderId(this.currentSettings().trackerProvider) !== providerId) {
+        const currentSettings = this.currentSettings()
+        if (trackerProviderId(currentSettings.trackerProvider) !== providerId) {
           throw new Error(`run "${parsedRunId}" cannot be resumed because the selected tracker provider changed`)
+        }
+        const currentEvaluation = evaluateIssue(issue, currentSettings.maxBriefBytes)
+        if ('reason' in currentEvaluation) {
+          throw new Error(
+            `run "${parsedRunId}" cannot be resumed because current tracker eligibility is ${currentEvaluation.reason}`,
+          )
         }
         const index = current.runs.findIndex((run) => run.runId === parsedRunId)
         const run = current.runs[index]
         if (run?.state !== 'paused' || !run.pause.operatorHold) {
           throw new Error(`run "${parsedRunId}" is not paused on an operator hold`)
         }
-        if (!sameRetainedRun(run, retained) || !matchesRetainedIssue(run, providerId, evaluation)) {
+        if (!sameRetainedRun(run, retained) || !matchesRetainedIssue(run, providerId, currentEvaluation)) {
           throw new Error(`run "${parsedRunId}" cannot be resumed because its retained identity changed`)
         }
 
@@ -623,15 +630,7 @@ export class Admission extends Service {
       if (current.budget.usageUncertain) {
         throw new Error('deployment token usage is uncertain; reconcile it before dispatch')
       }
-      const queued = current.runs
-        .filter((run): run is QueuedRun => run.state === 'queued')
-        .sort(
-          (left, right) =>
-            queueClassRank(left.queueClass) - queueClassRank(right.queueClass) ||
-            left.priorityRank - right.priorityRank ||
-            left.queueSequence - right.queueSequence ||
-            left.displayKey.localeCompare(right.displayKey),
-        )[0]
+      const queued = current.runs.filter((run): run is QueuedRun => run.state === 'queued').sort(compareQueuedRuns)[0]
       if (queued === undefined) return current
       if (
         current.budget.settledTokens + current.budget.reservedTokens + settings.runTokenAllowance >
@@ -1033,6 +1032,28 @@ function queueClassRank(queueClass: QueuedRun['queueClass']): number {
   return queueClass === 'resumption' ? 0 : 1
 }
 
+function compareQueuedRuns(left: QueuedRun, right: QueuedRun): number {
+  return queueClassRank(left.queueClass) - queueClassRank(right.queueClass) || compareRunFacts(left, right)
+}
+
+function compareSnapshotRuns(left: AutopilotRun, right: AutopilotRun): number {
+  return snapshotGroup(left) - snapshotGroup(right) || compareRunFacts(left, right)
+}
+
+function snapshotGroup(run: AutopilotRun): number {
+  if (run.state === 'implementing') return 0
+  if (run.state === 'queued') return queueClassRank(run.queueClass) + 1
+  return 3
+}
+
+function compareRunFacts(left: AutopilotRun, right: AutopilotRun): number {
+  return (
+    left.priorityRank - right.priorityRank ||
+    left.queueSequence - right.queueSequence ||
+    left.displayKey.localeCompare(right.displayKey)
+  )
+}
+
 function executionFor(run: QueuedRun, settings: AdmissionSettings): RunExecutionSnapshot {
   const stableId = run.runId.slice('run_'.length)
   return {
@@ -1049,12 +1070,7 @@ function executionFor(run: QueuedRun, settings: AdmissionSettings): RunExecution
 function snapshotOf(state: AdmissionState): AdmissionSnapshot {
   return {
     revision: state.revision,
-    runs: structuredClone(state.runs).sort(
-      (left, right) =>
-        left.priorityRank - right.priorityRank ||
-        left.queueSequence - right.queueSequence ||
-        left.displayKey.localeCompare(right.displayKey),
-    ),
+    runs: structuredClone(state.runs).sort(compareSnapshotRuns),
     acceptedIngress: [...state.acceptedIngress],
     scheduler: structuredClone(state.scheduler),
     budget: structuredClone(state.budget),
