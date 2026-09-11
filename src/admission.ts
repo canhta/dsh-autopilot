@@ -89,6 +89,17 @@ export interface QueuedRun {
   readonly queueSequence: number
 }
 
+export interface PausedQueuedRun extends Omit<QueuedRun, 'state' | 'queueClass'> {
+  readonly state: 'paused'
+  readonly queueClass: 'resumption'
+  readonly pause: {
+    readonly reason: 'operator'
+    readonly operatorHold: true
+    readonly continuationTarget: 'implementing'
+    readonly pausedAt: string
+  }
+}
+
 export interface RunExecutionSnapshot {
   readonly attempt: number
   readonly sessionId: SessionId
@@ -144,7 +155,7 @@ export interface TerminalRun extends Omit<QueuedRun, 'state'> {
   readonly completedAt: string
 }
 
-export type AutopilotRun = QueuedRun | ImplementingRun | TerminalRun
+export type AutopilotRun = QueuedRun | PausedQueuedRun | ImplementingRun | TerminalRun
 
 export type RunUsageSettlement =
   | { readonly kind: 'known'; readonly tokens: number }
@@ -207,11 +218,13 @@ const briefSchema = z.object({
   }),
 })
 
+const runIdSchema = z
+  .string()
+  .regex(/^run_[a-f0-9]{32}$/)
+  .transform((value) => value as RunId)
+
 const runBaseSchema = z.object({
-  runId: z
-    .string()
-    .regex(/^run_[a-f0-9]{32}$/)
-    .transform((value) => value as RunId),
+  runId: runIdSchema,
   providerId: z.string().transform(trackerProviderId),
   bindingId: z.string().transform(trackerBindingId),
   issueId: z.string().transform(trackerIssueId),
@@ -274,6 +287,16 @@ const outcomeSchema = z.discriminatedUnion('kind', [
 ])
 
 const queuedRunSchema = runBaseSchema.extend({ state: z.literal('queued') })
+const pausedQueuedRunSchema = runBaseSchema.extend({
+  state: z.literal('paused'),
+  queueClass: z.literal('resumption'),
+  pause: z.object({
+    reason: z.literal('operator'),
+    operatorHold: z.literal(true),
+    continuationTarget: z.literal('implementing'),
+    pausedAt: z.iso.datetime({ offset: true }),
+  }),
+})
 const implementingRunSchema = runBaseSchema.extend({
   state: z.literal('implementing'),
   execution: executionSchema,
@@ -286,7 +309,12 @@ const terminalRunSchema = runBaseSchema.extend({
   outcome: outcomeSchema,
   completedAt: z.iso.datetime({ offset: true }),
 })
-const runSchema = z.discriminatedUnion('state', [queuedRunSchema, implementingRunSchema, terminalRunSchema])
+const runSchema = z.discriminatedUnion('state', [
+  queuedRunSchema,
+  pausedQueuedRunSchema,
+  implementingRunSchema,
+  terminalRunSchema,
+])
 const schedulerModeSchema = z.enum(['enabled', 'draining', 'disabled'])
 const schedulerSchema = z.object({
   mode: schedulerModeSchema,
@@ -333,20 +361,22 @@ const stateSchema = z
       addIntegrityIssue('next queue sequence must follow every retained run')
     }
     const runReservations = value.runs.reduce(
-      (total, run) => total + (run.state === 'queued' ? 0 : run.budget.reservedTokens),
+      (total, run) => total + (run.state === 'queued' || run.state === 'paused' ? 0 : run.budget.reservedTokens),
       0,
     )
     if (runReservations !== value.budget.reservedTokens) {
       addIntegrityIssue('deployment reservation must equal active run reservations')
     }
     const runSettlements = value.runs.reduce(
-      (total, run) => total + (run.state === 'queued' ? 0 : run.budget.settledTokens),
+      (total, run) => total + (run.state === 'queued' || run.state === 'paused' ? 0 : run.budget.settledTokens),
       0,
     )
     if (runSettlements !== value.budget.settledTokens) {
       addIntegrityIssue('deployment settlement must equal retained run settlements')
     }
-    const uncertain = value.runs.some((run) => run.state !== 'queued' && run.budget.usageUncertain)
+    const uncertain = value.runs.some(
+      (run) => run.state !== 'queued' && run.state !== 'paused' && run.budget.usageUncertain,
+    )
     if (uncertain !== value.budget.usageUncertain) {
       addIntegrityIssue('deployment usage uncertainty must match retained run uncertainty')
     }
@@ -462,6 +492,35 @@ export class Admission extends Service {
       return stateSchema.parse(next)
     })
     return snapshotOf(committed)
+  }
+
+  async holdQueued(runId: RunId): Promise<PausedQueuedRun> {
+    const parsedRunId = runIdSchema.parse(runId)
+    let held: PausedQueuedRun | undefined
+    await this.currentTable().update(STATE_KEY, (current) => {
+      const index = current.runs.findIndex((run) => run.runId === parsedRunId)
+      const run = current.runs[index]
+      if (run === undefined) throw new Error(`run "${parsedRunId}" does not exist`)
+      if (run.state !== 'queued') throw new Error(`run "${parsedRunId}" is not queued`)
+
+      held = {
+        ...structuredClone(run),
+        state: 'paused',
+        queueClass: 'resumption',
+        pause: {
+          reason: 'operator',
+          operatorHold: true,
+          continuationTarget: 'implementing',
+          pausedAt: new Date().toISOString(),
+        },
+      }
+      const next = structuredClone(current)
+      next.runs[index] = held
+      next.revision += 1
+      return stateSchema.parse(next)
+    })
+    if (held === undefined) throw new Error(`run "${parsedRunId}" was not held`)
+    return structuredClone(held)
   }
 
   /**

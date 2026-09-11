@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
-import { Admission } from '../src/admission.js'
+import { Admission, type RunId } from '../src/admission.js'
 import { createFixtureTrackerProvider } from '../src/testing.js'
 import {
   readinessGeneration,
@@ -274,6 +274,81 @@ describe('admission service seam', () => {
       budget: { reservedTokens: 0, settledTokens: 10, usageUncertain: false },
     })
     await expect(ctx.admission.claimNext()).resolves.toBeUndefined()
+  })
+
+  it('durably holds queued work before allocation and excludes it from claims', async () => {
+    const path = await databasePath()
+    const executionSettings = fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees')
+    const first = await boot(path, [candidate()], 20, executionSettings)
+    await first.ctx.admission.reconcile({ source: 'manual' })
+    const queued = first.ctx.admission.snapshot().runs[0]
+    if (queued?.state !== 'queued') throw new Error('expected a queued run')
+
+    const held = await first.ctx.admission.holdQueued(queued.runId)
+
+    expect(held).toEqual({
+      ...queued,
+      state: 'paused',
+      queueClass: 'resumption',
+      pause: {
+        reason: 'operator',
+        operatorHold: true,
+        continuationTarget: 'implementing',
+        pausedAt: expect.any(String),
+      },
+    })
+    expect(Date.parse(held.pause.pausedAt)).not.toBeNaN()
+    expect(held).not.toHaveProperty('execution')
+    expect(held).not.toHaveProperty('budget')
+    expect(first.ctx.admission.snapshot().budget).toEqual({
+      reservedTokens: 0,
+      settledTokens: 0,
+      usageUncertain: false,
+    })
+    await expect(first.ctx.admission.claimNext()).resolves.toBeUndefined()
+
+    ;(held.pause as { reason: string }).reason = 'caller mutation'
+    ;(held.brief as { content: string }).content = 'caller mutation'
+    const beforeRestart = first.ctx.admission.snapshot()
+    expect(beforeRestart.runs[0]).toMatchObject({
+      state: 'paused',
+      queueClass: 'resumption',
+      brief: { content: validBrief },
+      pause: { reason: 'operator', operatorHold: true, continuationTarget: 'implementing' },
+    })
+    await disposeTrackedContext(first.ctx)
+
+    const second = await boot(path, [], 20, executionSettings)
+    expect(second.ctx.admission.snapshot()).toEqual(beforeRestart)
+    await expect(second.ctx.admission.claimNext()).resolves.toBeUndefined()
+  })
+
+  it('rejects invalid, absent, paused, and active hold targets atomically', async () => {
+    const { ctx } = await boot(
+      await databasePath(),
+      [
+        candidate({ issueId: trackerIssueId('active'), displayKey: 'FIX-ACTIVE', priorityRank: 1 }),
+        candidate({ issueId: trackerIssueId('paused'), displayKey: 'FIX-PAUSED', priorityRank: 2 }),
+      ],
+      20,
+      fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees'),
+    )
+    await ctx.admission.reconcile({ source: 'manual' })
+    const [, queuedToPause] = ctx.admission.snapshot().runs
+    if (queuedToPause?.state !== 'queued') throw new Error('expected a second queued run')
+    const paused = await ctx.admission.holdQueued(queuedToPause.runId)
+    const active = await ctx.admission.claimNext()
+    if (active === undefined) throw new Error('expected an implementing run')
+    const before = ctx.admission.snapshot()
+
+    await expect(ctx.admission.holdQueued('not-a-run-id' as RunId)).rejects.toThrow()
+    expect(ctx.admission.snapshot()).toEqual(before)
+    await expect(ctx.admission.holdQueued(`run_${'0'.repeat(32)}` as RunId)).rejects.toThrow(/does not exist/)
+    expect(ctx.admission.snapshot()).toEqual(before)
+    await expect(ctx.admission.holdQueued(paused.runId)).rejects.toThrow(/not queued/)
+    expect(ctx.admission.snapshot()).toEqual(before)
+    await expect(ctx.admission.holdQueued(active.runId)).rejects.toThrow(/not queued/)
+    expect(ctx.admission.snapshot()).toEqual(before)
   })
 
   it('keeps dispatch disabled unless the fixture mode and positive limits are explicit', async () => {
