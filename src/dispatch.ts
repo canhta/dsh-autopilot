@@ -20,9 +20,9 @@ export const FIXTURE_MODEL = 'controlled'
 const GIT_OUTPUT_LIMIT = 1024 * 1024
 const GIT_GRACE_MS = 5_000
 const GIT_TIMEOUT_MS = 30_000
-const MAX_REPORT_SUMMARY_LENGTH = 4_096
+const MAX_REPORT_TEXT_BYTES = 4 * 1024
 const MAX_REPORT_EVIDENCE = 100
-const MAX_REPORT_EVIDENCE_LENGTH = 4_096
+const textEncoder = new TextEncoder()
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -58,10 +58,18 @@ export class Dispatch extends Service {
     super(ctx, 'dispatch')
   }
 
-  /** Claim and execute the next queued run, or return undefined when no work is queued. */
+  /**
+   * Claim and execute the next queued run through the controlled fixture model, or return undefined when the queue is
+   * empty. Requires the injected DSH execution services, a registered fixture adapter, valid fixture Settings, and Git.
+   * The method reserves durable budget before Git/model effects, owns the root Agent to quiescence, flushes its Session,
+   * records final Git facts, and settles a structured terminal outcome. Setup/model/Git failures become a failed run
+   * when the aggregate remains writable; an aggregate write failure rejects for explicit recovery. This first-slice
+   * operation accepts no caller cancellation signal.
+   */
   async dispatchNext(): Promise<TerminalRun | undefined> {
-    const run = await this.ctx.admission.claimNext()
-    if (run === undefined) return undefined
+    const claimed = await this.ctx.admission.claimNext()
+    if (claimed === undefined) return undefined
+    let run = claimed
 
     const usage: UsageRecorder = { usage: [], requests: 0 }
     const report: ReportRecorder = {}
@@ -80,7 +88,7 @@ export class Dispatch extends Service {
         run.execution.baseBranch,
       ])
       git = await inspectGit(this.ctx.subprocess, run.execution.worktreePath, baseHead)
-      await this.ctx.admission.recordWorktree(run.runId, git)
+      run = await this.ctx.admission.recordWorktree(run.runId, git)
 
       const workspace: Workspace = await this.ctx.workspaceRegistry.create(run.execution.worktreePath, run.displayKey)
       const handle = await this.ctx.agents.create({
@@ -128,7 +136,7 @@ export class Dispatch extends Service {
       }
       return await this.ctx.admission.settle(
         run.runId,
-        { kind: 'failed', summary: 'Fixture dispatch failed.', evidence: [message] },
+        { kind: 'failed', summary: 'Fixture dispatch failed.', evidence: [truncateUtf8(message)] },
         usageSettlement(usage),
       )
     }
@@ -143,6 +151,8 @@ function createReportTool(recorder: ReportRecorder) {
       kind: { type: 'string', enum: ['verified', 'blocked', 'failed'], required: true },
       summary: { type: 'string', required: true },
       evidence: { type: 'array', items: { type: 'string' }, required: true },
+      gitHead: { type: 'string' },
+      gitStatus: { type: 'string' },
     },
     output: {
       schema: { type: 'string', const: 'accepted' },
@@ -153,19 +163,32 @@ function createReportTool(recorder: ReportRecorder) {
         recorder.violation = 'the model submitted more than one terminal report'
         throw new Error(recorder.violation)
       }
-      if (args.summary.length === 0 || args.summary.length > MAX_REPORT_SUMMARY_LENGTH) {
+      if (args.summary.length === 0 || textEncoder.encode(args.summary).byteLength > MAX_REPORT_TEXT_BYTES) {
         throw new TypeError('report summary must be non-empty and within its durable limit')
       }
       if (
         args.evidence.length > MAX_REPORT_EVIDENCE ||
-        args.evidence.some((entry) => entry.length === 0 || entry.length > MAX_REPORT_EVIDENCE_LENGTH)
+        args.evidence.some(
+          (entry) => entry.length === 0 || textEncoder.encode(entry).byteLength > MAX_REPORT_TEXT_BYTES,
+        )
       ) {
         throw new TypeError('report evidence must contain only bounded non-empty entries')
       }
-      recorder.outcome = {
-        kind: args.kind,
-        summary: args.summary,
-        evidence: [...args.evidence],
+      if (args.kind === 'verified') {
+        if (args.gitHead === undefined || !/^[a-f0-9]{40,64}$/.test(args.gitHead) || args.gitStatus === undefined) {
+          throw new TypeError('verified reports require an exact Git head and status')
+        }
+        recorder.outcome = {
+          kind: args.kind,
+          summary: args.summary,
+          evidence: [...args.evidence],
+          reportedGit: { head: args.gitHead, status: args.gitStatus },
+        }
+      } else {
+        if (args.gitHead !== undefined || args.gitStatus !== undefined) {
+          throw new TypeError('blocked and failed reports must not claim verified Git facts')
+        }
+        recorder.outcome = { kind: args.kind, summary: args.summary, evidence: [...args.evidence] }
       }
       return 'accepted' as const
     },
@@ -230,18 +253,23 @@ function validatedOutcome(report: ReportRecorder, git: GitExecutionSnapshot): Ex
   if (report.outcome === undefined) {
     return { kind: 'failed', summary: 'The fixture model did not submit a terminal report.', evidence: [] }
   }
-  if (report.outcome.kind === 'verified' && git.status !== '') {
+  if (
+    report.outcome.kind === 'verified' &&
+    (report.outcome.reportedGit.head !== git.head || report.outcome.reportedGit.status !== git.status)
+  ) {
     return {
       kind: 'failed',
-      summary: 'The fixture model reported verification with an uncommitted worktree.',
-      evidence: [git.status],
+      summary: 'The fixture model reported Git facts that do not match the managed worktree.',
+      evidence: [truncateUtf8(`head=${git.head}\nstatus=${git.status}`)],
     }
   }
   return report.outcome
 }
 
 function executionPrompt(run: ImplementingRun): string {
-  return `Execute the approved Agent Brief below in the managed fixture worktree. Use autopilot_report exactly once with a verified, blocked, or failed outcome before finishing.\n\n${run.brief.content}`
+  const git = run.execution.git
+  if (git === undefined) throw new Error('the managed worktree has no durable Git facts')
+  return `Execute the approved Agent Brief below in the managed fixture worktree. Use autopilot_report exactly once with a verified, blocked, or failed outcome before finishing. A verified report must repeat the exact final Git head and porcelain status.\n\nManaged Git head: ${git.head}\nManaged Git status: ${JSON.stringify(git.status)}\n\n${run.brief.content}`
 }
 
 async function inspectGit(
@@ -303,7 +331,20 @@ async function gitCommand(subprocess: SubprocessRuntime, cwd: string, args: read
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error)
+  const message = error instanceof Error ? error.message : String(error)
+  return message || 'unknown fixture dispatch failure'
+}
+
+function truncateUtf8(value: string): string {
+  if (textEncoder.encode(value).byteLength <= MAX_REPORT_TEXT_BYTES) return value
+  let low = 0
+  let high = value.length
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2)
+    if (textEncoder.encode(value.slice(0, middle)).byteLength <= MAX_REPORT_TEXT_BYTES) low = middle
+    else high = middle - 1
+  }
+  return value.slice(0, low)
 }
 
 export default Dispatch

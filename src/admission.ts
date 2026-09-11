@@ -29,6 +29,7 @@ const MAX_SUMMARY_BYTES = 2048
 const MAX_BRIEF_BYTES = 32 * 1024
 const MAX_CANDIDATES = 1000
 const MAX_CANDIDATE_BYTES = 16 * 1024 * 1024
+const MAX_OUTCOME_TEXT_BYTES = 4 * 1024
 const STATE_KEY = 'primary' as const
 const textEncoder = new TextEncoder()
 const ID_PATTERN = /^[a-z0-9][a-z0-9._:-]*$/
@@ -119,7 +120,12 @@ export interface ImplementingRun extends Omit<QueuedRun, 'state'> {
 }
 
 export type ExecutionOutcome =
-  | { readonly kind: 'verified'; readonly summary: string; readonly evidence: string[] }
+  | {
+      readonly kind: 'verified'
+      readonly summary: string
+      readonly evidence: string[]
+      readonly reportedGit: Pick<GitExecutionSnapshot, 'head' | 'status'>
+    }
   | { readonly kind: 'blocked'; readonly summary: string; readonly evidence: string[] }
   | { readonly kind: 'failed'; readonly summary: string; readonly evidence: string[] }
 
@@ -243,11 +249,21 @@ const runBudgetSchema = z.object({
   usageUncertain: z.boolean(),
 })
 
-const outcomeSchema = z.object({
-  kind: z.enum(['verified', 'blocked', 'failed']),
-  summary: z.string().min(1).max(4096),
-  evidence: z.array(z.string().min(1).max(4096)).max(100),
+const outcomeBaseSchema = z.object({
+  summary: boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'outcome summary'),
+  evidence: z.array(boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'outcome evidence')).max(100),
 })
+const outcomeSchema = z.discriminatedUnion('kind', [
+  outcomeBaseSchema.extend({
+    kind: z.literal('verified'),
+    reportedGit: z.object({
+      head: z.string().regex(/^[a-f0-9]{40,64}$/),
+      status: z.string().max(1024 * 1024),
+    }),
+  }),
+  outcomeBaseSchema.extend({ kind: z.literal('blocked') }),
+  outcomeBaseSchema.extend({ kind: z.literal('failed') }),
+])
 
 const queuedRunSchema = runBaseSchema.extend({ state: z.literal('queued') })
 const implementingRunSchema = runBaseSchema.extend({
@@ -410,8 +426,10 @@ export class Admission extends Service {
 
   /**
    * Atomically claim the highest-priority queued run and reserve its configured fixture allowance.
-   * Returns undefined when the queue is empty. Fixture execution must be explicitly configured; cap or durable-write
-   * failures reject without claiming a run or changing the budget aggregate.
+   * Requires explicit fixture execution paths and positive caps. Returns undefined when the queue is empty. The claim
+   * stores immutable run/Session/worktree identities and its reservation together; disabled execution, uncertain usage,
+   * insufficient capacity, invalid configuration, or durable-write failure rejects without a partial claim. The method
+   * accepts no cancellation signal and does not start external work.
    */
   async claimNext(): Promise<ImplementingRun | undefined> {
     const settings = this.currentSettings()
@@ -461,7 +479,11 @@ export class Admission extends Service {
     return claimed === undefined ? undefined : structuredClone(claimed)
   }
 
-  /** Persist the exact Git facts established for a claimed run before an Agent is created. */
+  /**
+   * Persist exact Git facts for an implementing run before Agent creation and again after execution.
+   * The run must exist, still be implementing, and not require recovery. Invalid evidence or durable-write failure
+   * rejects without changing the prior snapshot. The atomic record update accepts no cancellation signal.
+   */
   async recordWorktree(runId: RunId, git: GitExecutionSnapshot): Promise<ImplementingRun> {
     const parsedGit = executionSchema.shape.git.unwrap().parse(git)
     let recorded: ImplementingRun | undefined
@@ -481,7 +503,13 @@ export class Admission extends Service {
     return structuredClone(recorded)
   }
 
-  /** Atomically transition a claimed run to its structured terminal state and settle its reservation. */
+  /**
+   * Atomically transition an implementing run to its structured terminal state and settle its reservation.
+   * Verified outcomes require recorded Git facts. Known usage within both retained limits releases the reservation and
+   * increments settled usage; missing, invalid, or excessive usage produces a failed outcome, retains the obligation,
+   * and stops later authorization. Validation or durable-write failure leaves the prior snapshot unchanged. The method
+   * accepts no cancellation signal.
+   */
   async settle(runId: RunId, outcome: ExecutionOutcome, usage: RunUsageSettlement): Promise<TerminalRun> {
     const parsedOutcome = outcomeSchema.parse(outcome) as ExecutionOutcome
     let settled: TerminalRun | undefined
@@ -506,7 +534,12 @@ export class Admission extends Service {
         : {
             kind: 'failed',
             summary: 'Provider token usage could not be settled safely.',
-            evidence: [usage.kind === 'uncertain' ? usage.reason : 'reported usage exceeded the reserved allowance'],
+            evidence: [
+              usage.kind === 'uncertain'
+                ? truncateUtf8(usage.reason, MAX_OUTCOME_TEXT_BYTES) ||
+                  'provider did not supply a usage uncertainty reason'
+                : 'reported usage exceeded the reserved allowance',
+            ],
           }
       const terminalRun: TerminalRun = {
         ...run,
@@ -832,6 +865,27 @@ function assertStateSize(state: AdmissionState): void {
   if (textEncoder.encode(JSON.stringify(state)).byteLength > MAX_STATE_BYTES) {
     throw new RangeError(`admission state exceeds ${String(MAX_STATE_BYTES)} bytes`)
   }
+}
+
+function boundedNonEmptyString(maxBytes: number, label: string): z.ZodString {
+  return z
+    .string()
+    .min(1)
+    .refine((value) => textEncoder.encode(value).byteLength <= maxBytes, {
+      error: `${label} must not exceed ${String(maxBytes)} UTF-8 bytes`,
+    })
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  if (textEncoder.encode(value).byteLength <= maxBytes) return value
+  let low = 0
+  let high = value.length
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2)
+    if (textEncoder.encode(value.slice(0, middle)).byteLength <= maxBytes) low = middle
+    else high = middle - 1
+  }
+  return value.slice(0, low)
 }
 
 function validateRequest(request: ReconcileRequest): void {

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -22,7 +22,7 @@ import {
   trackerCommentId,
   trackerIssueId,
 } from '../src/tracker.js'
-import { disposeContext, mountExecutionHostServices } from './dsh-fixtures.js'
+import { disposeContext, fixtureExecutionSettings, mountExecutionHostServices } from './dsh-fixtures.js'
 
 const temporaryDirectories: string[] = []
 const contexts: Context[] = []
@@ -39,6 +39,15 @@ class ControlledAdapter extends LlmAdapter {
   constructor(
     private readonly reportKind: 'verified' | 'blocked' | 'failed' = 'verified',
     private readonly usageMode: 'known' | 'missing' | 'over' = 'known',
+    private readonly reportMode:
+      | 'valid'
+      | 'missing'
+      | 'malformed'
+      | 'multiple'
+      | 'empty'
+      | 'exact-multibyte'
+      | 'oversized' = 'valid',
+    private readonly beforeFirstResponse?: () => Promise<void>,
   ) {
     super()
   }
@@ -50,36 +59,80 @@ class ControlledAdapter extends LlmAdapter {
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.requests.push(options)
     this.response += 1
-    if (this.response === 1) {
-      const id = ToolCallId('report-1')
-      const argumentsJson = JSON.stringify({
-        kind: this.reportKind,
-        summary: 'The fixture run completed and its clean Git state was verified.',
-        evidence: ['controlled-model', 'clean-worktree'],
-      })
-      yield { type: 'block-start', index: 0, blockType: 'tool-call' }
-      yield {
-        type: 'block-end',
-        index: 0,
-        block: { type: 'tool-call', id, name: 'autopilot_report', arguments: argumentsJson },
-      }
-      if (this.usageMode !== 'missing') {
-        yield {
-          type: 'usage',
-          usage:
-            this.usageMode === 'over'
-              ? { inputTokens: 70, outputTokens: 3, cacheReadTokens: 2 }
-              : { inputTokens: 7, outputTokens: 3, cacheReadTokens: 2 },
-        }
-      }
-      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+    if (this.response === 1) await this.beforeFirstResponse?.()
+
+    if (this.reportMode === 'missing') {
+      yield* this.textResponse()
       return
     }
+
+    if (this.response === 1 || (this.reportMode === 'multiple' && this.response === 2)) {
+      const { head, status } = managedGitFrom(options)
+      const summary =
+        this.reportMode === 'empty'
+          ? ''
+          : this.reportMode === 'exact-multibyte'
+            ? '😀'.repeat(1024)
+            : this.reportMode === 'oversized'
+              ? '😀'.repeat(1025)
+              : 'The fixture run completed and its clean Git state was verified.'
+      const report: Record<string, unknown> = {
+        kind: this.reportKind,
+        summary,
+        evidence: this.reportMode === 'malformed' ? [1] : ['controlled-model', 'clean-worktree'],
+      }
+      if (this.reportKind === 'verified') Object.assign(report, { gitHead: head, gitStatus: status })
+      yield* this.toolResponse(`report-${String(this.response)}`, report)
+      return
+    }
+
+    yield* this.textResponse()
+  }
+
+  private *toolResponse(id: string, report: Record<string, unknown>): Iterable<StreamChunk> {
+    yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+    yield {
+      type: 'block-end',
+      index: 0,
+      block: {
+        type: 'tool-call',
+        id: ToolCallId(id),
+        name: 'autopilot_report',
+        arguments: JSON.stringify(report),
+      },
+    }
+    if (this.usageMode !== 'missing') {
+      yield {
+        type: 'usage',
+        usage:
+          this.usageMode === 'over'
+            ? { inputTokens: 70, outputTokens: 3, cacheReadTokens: 2 }
+            : { inputTokens: 7, outputTokens: 3, cacheReadTokens: 2 },
+      }
+    }
+    yield { type: 'finish', reason: { kind: 'tool-calls' } }
+  }
+
+  private *textResponse(): Iterable<StreamChunk> {
     yield { type: 'block-start', index: 0, blockType: 'text' }
     yield { type: 'block-end', index: 0, block: { type: 'text', text: 'done' } }
     if (this.usageMode !== 'missing') yield { type: 'usage', usage: { inputTokens: 4, outputTokens: 2 } }
     yield { type: 'finish', reason: { kind: 'stop' } }
   }
+}
+
+function managedGitFrom(options: GenerateOptions): { head: string; status: string } {
+  const text = options.messages
+    .flatMap((message) => message.content)
+    .filter(
+      (block): block is Extract<(typeof options.messages)[number]['content'][number], { type: 'text' }> =>
+        block.type === 'text',
+    )
+    .map((block) => block.text)
+    .join('\n')
+  const match = /Managed Git head: ([a-f0-9]{40,64})\nManaged Git status: ("(?:[^"\\]|\\.)*")/.exec(text)
+  if (match?.[1] === undefined || match[2] === undefined) throw new Error('fixture request omitted managed Git facts')
+  return { head: match[1], status: JSON.parse(match[2]) as string }
 }
 
 const brief = `# Agent Brief
@@ -167,13 +220,7 @@ async function bootFixture(root: string, adapter: ControlledAdapter): Promise<Co
   const ctx = await mountExecutionHostServices(join(root, 'state.sqlite'), sessionRoot, {
     'dsh-autopilot': {
       trackerProvider: 'fixture',
-      executionMode: 'fixture',
-      targetRepository: repository,
-      targetBaseBranch: 'main',
-      managedWorktreeRoot: worktreeRoot,
-      deploymentTokenCap: 100,
-      perRunTokenCap: 60,
-      runTokenAllowance: 60,
+      ...fixtureExecutionSettings(repository, worktreeRoot),
     },
   })
   contexts.push(ctx)
@@ -216,6 +263,10 @@ describe('durable fixture dispatch', () => {
     const snapshot = ctx.admission.snapshot()
     expect(snapshot.budget).toEqual({ reservedTokens: 0, settledTokens: 18, usageUncertain: false })
     expect(snapshot.runs).toEqual([completed])
+    ;(completed.outcome.evidence as string[]).push('caller mutation')
+    expect(ctx.admission.snapshot().runs[0]).not.toMatchObject({
+      outcome: { evidence: expect.arrayContaining(['caller mutation']) as unknown },
+    })
 
     const worktreePath = completed.execution.worktreePath
     expect(execFileSync('git', ['status', '--porcelain'], { cwd: worktreePath, encoding: 'utf8' })).toBe('')
@@ -245,6 +296,79 @@ describe('durable fixture dispatch', () => {
     const completed = await ctx.dispatch.dispatchNext()
 
     expect(completed).toMatchObject({ state: expectedState, outcome: { kind: reportKind } })
+  })
+
+  it.each(['missing', 'malformed', 'multiple', 'empty', 'oversized'] as const)(
+    'fails closed when the terminal report is %s',
+    async (reportMode) => {
+      const root = await mkdtemp(join(tmpdir(), `dsh-autopilot-report-${reportMode}-`))
+      temporaryDirectories.push(root)
+      const ctx = await bootFixture(root, new ControlledAdapter('verified', 'known', reportMode))
+
+      const completed = await ctx.dispatch.dispatchNext()
+
+      expect(completed).toMatchObject({ state: 'failed', outcome: { kind: 'failed' } })
+      expect(completed?.outcome.summary).toMatch(/did not submit|violated/)
+    },
+  )
+
+  it('accepts a report summary at the exact multibyte durable boundary', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-report-exact-'))
+    temporaryDirectories.push(root)
+    const ctx = await bootFixture(root, new ControlledAdapter('verified', 'known', 'exact-multibyte'))
+
+    const completed = await ctx.dispatch.dispatchNext()
+
+    expect(completed).toMatchObject({ state: 'publishing', outcome: { kind: 'verified' } })
+    expect(new TextEncoder().encode(completed?.outcome.summary).byteLength).toBe(4096)
+  })
+
+  it('rejects verification when the reported Git facts differ from the final managed worktree', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-report-git-mismatch-'))
+    temporaryDirectories.push(root)
+    const adapter = new ControlledAdapter('verified', 'known', 'valid', async () => {
+      const entries = await readdir(join(root, 'worktrees'))
+      const worktree = entries[0]
+      if (worktree === undefined) throw new Error('fixture worktree was not created')
+      await writeFile(join(root, 'worktrees', worktree, 'UNCOMMITTED.md'), 'uncommitted fixture change\n')
+    })
+    const ctx = await bootFixture(root, adapter)
+
+    const completed = await ctx.dispatch.dispatchNext()
+
+    expect(completed).toMatchObject({
+      state: 'failed',
+      outcome: {
+        kind: 'failed',
+        summary: 'The fixture model reported Git facts that do not match the managed worktree.',
+      },
+      execution: { git: { status: '?? UNCOMMITTED.md\n' } },
+    })
+  })
+
+  it('bounds retained Git mismatch evidence by UTF-8 bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-report-git-bound-'))
+    temporaryDirectories.push(root)
+    const adapter = new ControlledAdapter('verified', 'known', 'valid', async () => {
+      const entries = await readdir(join(root, 'worktrees'))
+      const worktree = entries[0]
+      if (worktree === undefined) throw new Error('fixture worktree was not created')
+      await Promise.all(
+        Array.from({ length: 100 }, (_, index) =>
+          writeFile(
+            join(root, 'worktrees', worktree, `UNCOMMITTED-${String(index).padStart(3, '0')}-${'x'.repeat(40)}.md`),
+            'fixture change\n',
+          ),
+        ),
+      )
+    })
+    const ctx = await bootFixture(root, adapter)
+
+    const completed = await ctx.dispatch.dispatchNext()
+
+    if (completed === undefined) throw new Error('expected a terminal fixture run')
+    expect(completed).toMatchObject({ state: 'failed', outcome: { kind: 'failed' } })
+    expect(new TextEncoder().encode(completed.outcome.evidence[0]).byteLength).toBe(4096)
   })
 
   it('retains the reservation and stops later authorization when provider usage is missing', async () => {
@@ -310,13 +434,7 @@ describe('durable fixture dispatch', () => {
     const ctx = await mountExecutionHostServices(join(root, 'state.sqlite'), join(root, 'sessions'), {
       'dsh-autopilot': {
         trackerProvider: 'fixture',
-        executionMode: 'fixture',
-        targetRepository: repository,
-        targetBaseBranch: 'main',
-        managedWorktreeRoot: join(root, 'worktrees'),
-        deploymentTokenCap: 100,
-        perRunTokenCap: 60,
-        runTokenAllowance: 60,
+        ...fixtureExecutionSettings(repository, join(root, 'worktrees')),
       },
     })
     contexts.push(ctx)

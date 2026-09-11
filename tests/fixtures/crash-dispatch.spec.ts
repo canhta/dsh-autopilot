@@ -12,7 +12,7 @@ import {
   trackerCommentId,
   trackerIssueId,
 } from '../../src/tracker.js'
-import { mountExecutionHostServices } from '../dsh-fixtures.js'
+import { fixtureExecutionSettings, mountExecutionHostServices } from '../dsh-fixtures.js'
 
 const root = process.env.DSH_AUTOPILOT_CRASH_ROOT
 
@@ -81,13 +81,7 @@ describe.skipIf(root === undefined)('isolated crash fixture', () => {
     const ctx = await mountExecutionHostServices(`${root}/state.sqlite`, `${root}/sessions`, {
       'dsh-autopilot': {
         trackerProvider: 'fixture',
-        executionMode: 'fixture',
-        targetRepository: repository,
-        targetBaseBranch: 'main',
-        managedWorktreeRoot: `${root}/worktrees`,
-        deploymentTokenCap: 100,
-        perRunTokenCap: 60,
-        runTokenAllowance: 60,
+        ...fixtureExecutionSettings(repository, `${root}/worktrees`),
       },
     })
     ctx.llm.registerAdapter([FIXTURE_PROVIDER], new CrashAfterDurabilityAdapter(ctx))

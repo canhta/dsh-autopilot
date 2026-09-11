@@ -17,7 +17,7 @@ import {
   trackerCommentId,
   trackerIssueId,
 } from '../src/tracker.js'
-import { disposeContext, mountHostServices } from './dsh-fixtures.js'
+import { disposeContext, fixtureExecutionSettings, mountHostServices } from './dsh-fixtures.js'
 
 const temporaryDirectories: string[] = []
 const contexts: Context[] = []
@@ -108,6 +108,16 @@ function useDatabase<T>(path: string, operation: (database: DatabaseSync) => T):
   }
 }
 
+function rejectAdmissionUpdates(path: string): void {
+  useDatabase(path, (database) => {
+    database.exec(`CREATE TRIGGER reject_admission_update
+      BEFORE UPDATE ON u_autopilot_admission_state
+      BEGIN
+        SELECT RAISE(ABORT, 'forced durable failure');
+      END`)
+  })
+}
+
 interface StoredRun {
   runId: string
   providerId: string
@@ -185,15 +195,7 @@ describe('admission service seam', () => {
         candidate({ issueId: trackerIssueId('second'), displayKey: 'FIX-2', priorityRank: 2 }),
       ],
       20,
-      {
-        executionMode: 'fixture',
-        targetRepository: '/tmp/fixture-target',
-        targetBaseBranch: 'main',
-        managedWorktreeRoot: '/tmp/fixture-worktrees',
-        deploymentTokenCap: 100,
-        perRunTokenCap: 100,
-        runTokenAllowance: 60,
-      },
+      fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees', { perRunTokenCap: 100 }),
     )
     await ctx.admission.reconcile({ source: 'manual' })
 
@@ -602,13 +604,7 @@ describe('admission service seam', () => {
   it('does not commit a run or ingress receipt when durable update fails', async () => {
     const path = await databasePath()
     const { ctx } = await boot(path, [candidate()])
-    useDatabase(path, (database) => {
-      database.exec(`CREATE TRIGGER reject_admission_update
-        BEFORE UPDATE ON u_autopilot_admission_state
-        BEGIN
-          SELECT RAISE(ABORT, 'forced durable failure');
-        END`)
-    })
+    rejectAdmissionUpdates(path)
 
     await expect(
       ctx.admission.reconcile({ source: 'webhook', deliveryId: 'fixture:delivery-failure' }),
@@ -619,5 +615,86 @@ describe('admission service seam', () => {
       acceptedIngress: [],
       budget: { reservedTokens: 0, settledTokens: 0, usageUncertain: false },
     })
+  })
+
+  it('does not reserve or claim a run when the durable claim update fails', async () => {
+    const path = await databasePath()
+    const { ctx } = await boot(
+      path,
+      [candidate()],
+      20,
+      fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees'),
+    )
+    await ctx.admission.reconcile({ source: 'manual' })
+    const before = ctx.admission.snapshot()
+    rejectAdmissionUpdates(path)
+
+    await expect(ctx.admission.claimNext()).rejects.toThrow()
+
+    expect(ctx.admission.snapshot()).toEqual(before)
+    expect(ctx.admission.snapshot()).toMatchObject({
+      runs: [{ state: 'queued' }],
+      budget: { reservedTokens: 0, settledTokens: 0, usageUncertain: false },
+    })
+  })
+
+  it('does not release a reservation or publish an outcome when the durable settlement fails', async () => {
+    const path = await databasePath()
+    const { ctx } = await boot(
+      path,
+      [candidate()],
+      20,
+      fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees'),
+    )
+    await ctx.admission.reconcile({ source: 'manual' })
+    const claimed = await ctx.admission.claimNext()
+    if (claimed === undefined) throw new Error('expected a claimed run')
+    await ctx.admission.recordWorktree(claimed.runId, {
+      baseHead: 'a'.repeat(40),
+      head: 'a'.repeat(40),
+      status: '',
+    })
+    const before = ctx.admission.snapshot()
+    rejectAdmissionUpdates(path)
+
+    await expect(
+      ctx.admission.settle(
+        claimed.runId,
+        { kind: 'failed', summary: 'Fixture settlement failure.', evidence: ['fixture'] },
+        { kind: 'known', tokens: 10 },
+      ),
+    ).rejects.toThrow()
+
+    expect(ctx.admission.snapshot()).toEqual(before)
+    expect(ctx.admission.snapshot()).toMatchObject({
+      runs: [{ state: 'implementing', budget: { reservedTokens: 60, settledTokens: 0 } }],
+      budget: { reservedTokens: 60, settledTokens: 0, usageUncertain: false },
+    })
+  })
+
+  it('bounds an uncertain provider-usage reason by UTF-8 bytes before durable settlement', async () => {
+    const path = await databasePath()
+    const { ctx } = await boot(
+      path,
+      [candidate()],
+      20,
+      fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees'),
+    )
+    await ctx.admission.reconcile({ source: 'manual' })
+    const claimed = await ctx.admission.claimNext()
+    if (claimed === undefined) throw new Error('expected a claimed run')
+
+    const completed = await ctx.admission.settle(
+      claimed.runId,
+      { kind: 'failed', summary: 'Fixture usage failure.', evidence: ['fixture'] },
+      { kind: 'uncertain', reason: '😀'.repeat(5000) },
+    )
+
+    expect(completed).toMatchObject({
+      state: 'failed',
+      budget: { reservedTokens: 60, settledTokens: 0, usageUncertain: true },
+      outcome: { kind: 'failed', summary: 'Provider token usage could not be settled safely.' },
+    })
+    expect(new TextEncoder().encode(completed.outcome.evidence[0]).byteLength).toBe(4096)
   })
 })

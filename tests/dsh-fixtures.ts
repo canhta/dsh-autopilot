@@ -135,6 +135,23 @@ export async function mountExecutionHostServices(
   return ctx
 }
 
+export function fixtureExecutionSettings(
+  targetRepository: string,
+  managedWorktreeRoot: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    executionMode: 'fixture',
+    targetRepository,
+    targetBaseBranch: 'main',
+    managedWorktreeRoot,
+    deploymentTokenCap: 100,
+    perRunTokenCap: 60,
+    runTokenAllowance: 60,
+    ...overrides,
+  }
+}
+
 export async function disposeContext(ctx: Context): Promise<void> {
   await ctx.fiber.dispose()
 }
