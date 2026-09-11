@@ -10,6 +10,22 @@
       "types": "./lib/index.d.ts",
       "default": "./lib/index.js"
     },
+    "./admission": {
+      "types": "./lib/admission.d.ts",
+      "default": "./lib/admission.js"
+    },
+    "./jira": {
+      "types": "./lib/jira.d.ts",
+      "default": "./lib/jira.js"
+    },
+    "./tracker": {
+      "types": "./lib/tracker.d.ts",
+      "default": "./lib/tracker.js"
+    },
+    "./testing": {
+      "types": "./lib/testing.d.ts",
+      "default": "./lib/testing.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
@@ -55,14 +71,37 @@
       "patch": "./cordis.patch.yml"
     }
   },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-credentials": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-settings": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-storage": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "0.0.1-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "zod": "^4.6.1"
+  },
   "peerDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2"
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-credentials": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-storage": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "^0.0.1-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.1-rc.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@biomejs/biome": "latest",
     "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-credentials": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-settings": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-storage": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-storage-sqlite": "0.0.1-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@types/node": "^22.20.2",
     "lefthook": "latest",
     "typescript": "latest",
-    "vitest": "latest"
+    "vitest": "latest",
+    "zod": "^4.6.1"
   }
 }

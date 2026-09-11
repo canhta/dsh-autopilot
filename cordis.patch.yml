@@ -1,3 +1,5 @@
 - insert:
     - id: autopilot
       name: dsh-autopilot
+    - id: autopilot-jira
+      name: dsh-autopilot/jira

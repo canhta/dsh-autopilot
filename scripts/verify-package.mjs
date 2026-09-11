@@ -110,9 +110,14 @@ try {
   run(npx, [...dsh, '--profile', 'autopilot-package-smoke', '--from-default-profile', 'web', '--dump-config'])
   run(npx, [...dsh, 'plugin', '--profile', 'autopilot-package-smoke', 'add', artifact])
   const config = run(npx, [...dsh, '--profile', 'autopilot-package-smoke', '--dump-config'])
-  if (!config.includes('# == dsh-autopilot\n') || !config.includes('- id: autopilot\n  name: dsh-autopilot\n')) {
+  if (
+    !config.includes('# == dsh-autopilot\n') ||
+    !config.includes('- id: autopilot\n  name: dsh-autopilot\n') ||
+    !config.includes('- id: autopilot-jira\n  name: dsh-autopilot/jira\n')
+  ) {
     throw new Error('installed profile does not contain the dsh-autopilot bundle layer')
   }
+  await bootProfile('autopilot-package-smoke')
   await bootProfile('autopilot-package-smoke')
 
   const brokenPackage = join(dshHome, 'missing-entry')

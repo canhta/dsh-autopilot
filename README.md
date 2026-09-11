@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-78dba9?style=flat-square)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/canhta/dsh-autopilot/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/canhta/dsh-autopilot/actions/workflows/ci.yml)
-[![Status: bootstrap](https://img.shields.io/badge/status-bootstrap-d8b46a?style=flat-square)](https://github.com/canhta/dsh-autopilot/issues)
+[![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-d8b46a?style=flat-square)](https://github.com/canhta/dsh-autopilot/issues)
 [![Built for DeepSeek Harness](https://img.shields.io/badge/built_for-DeepSeek_Harness-6fa8dc?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![Contributions welcome](https://img.shields.io/badge/contributions-welcome-78dba9?style=flat-square)](docs/CONTRIBUTING.md)
 
@@ -12,13 +12,13 @@ dsh-autopilot is an open-source plugin for [DeepSeek Harness](https://github.com
 
 You decide which tickets are ready, when the agent can work and how much it can spend. Autopilot coordinates the work; your repository defines how code is built and checked; people keep control of blockers, review and merge.
 
-> **Pre-release · bootstrap available.** The repository now ships a loadable DSH bundle and its build/test/package workflow. Ticket intake, execution, provider connections and the Web UI are still planned capabilities, not working features. Follow each implementation slice in [GitHub Issues](https://github.com/canhta/dsh-autopilot/issues).
+> **Pre-release · admission core available.** The repository ships a loadable DSH bundle, a provider-independent durable admission queue, and a Jira Cloud read adapter. Tracker ingress, scheduling, execution, live-provider certification, pull-request publication and the Web UI are not implemented yet. Follow each implementation slice in [GitHub Issues](https://github.com/canhta/dsh-autopilot/issues).
 
 [Product direction](#product-direction) · [Installation](#installation) · [Local development](#local-development) · [Contributing](#contributing) · [Documentation](docs/README.md)
 
 ## Product direction
 
-- **Work from your existing backlog.** Select tickets by a configured label and approved brief. Use Jira or Linear with GitHub or Bitbucket; add providers through Cordis plugins.
+- **Work from your existing backlog.** The first deployment targets Jira Cloud with GitHub. Provider seams keep later Linear and Bitbucket implementations possible without adding vendor branches to core policy.
 - **Control when work starts.** Set a schedule, execution limits and spending policy. Eligible work waits in a durable queue until it can run.
 - **Pause without losing the workspace.** Retain the run, DSH Session and Git worktree so interrupted work can continue.
 - **Resolve blockers where the task lives.** Receive questions in ticket comments. A human answers and explicitly marks the ticket ready to continue.
@@ -51,9 +51,24 @@ See [run lifecycle](docs/specs/lifecycle.md) for exact pause, recovery and publi
 
 This is an issue-driven AI Development Lifecycle (AIDLC) flow for **one project on one VPS**. Autopilot adds coordination to DSH; it does not replace the harness's agent runtime, tools or Web application. See [product responsibilities](docs/specs/scope.md) for the precise division of ownership.
 
+## Current implementation
+
+The Host bundle currently contributes two independently loadable rows:
+
+- `dsh-autopilot` registers the public tracker provider registry and admission service. Reconciliation reads normalized provider pages, validates a single versioned Agent Brief, requires current attributable human readiness, checks dependencies, and commits ingress identity plus new queued runs in one bounded DSH storage-domain record.
+- `dsh-autopilot/jira` registers the Jira Cloud adapter. It reads current candidates, comments, blocking links and readiness changelogs with pagination; resolves its API-token reference through DSH Credentials for every operation; maps configured priorities/statuses; and normalizes rate limits and failures without exposing response bodies or credentials.
+
+The `dsh-autopilot-jira` Settings namespace requires the Jira site URL and Cloud ID, project key, dedicated integration email and account ID, credential reference, ready label, and explicit priority, completed-status, blocking-link, automation-account, and trusted-human-account mappings. Scoped tokens are sent only through the Cloud ID gateway. The integration account and configured automation identities can never establish human readiness; automation and trusted-human mappings must be disjoint, and missing dependency or trusted-human mappings fail configuration instead of weakening admission.
+
+Jira identifies Atlassian/customer accounts but cannot prove that an update made with a human account's token was performed interactively by that person. Autopilot therefore treats only explicitly allowlisted Atlassian/customer account IDs as human and every other non-automation actor as unknown. This still relies on a deployment trust rule: trusted-human credentials must never be used by automation, and every automated identity must be listed. Deployments that cannot uphold that rule must not enable admission.
+
+External provider plugins implement the `TrackerProvider` interface exported by `dsh-autopilot/tracker` and register through `ctx.tracker.register()`. `dsh-autopilot/testing` exports a deterministic fixture adapter for conformance and integration tests. Registration must be effect-owned by the provider plugin; withdrawal aborts and drains active reads before its disposer completes.
+
+The admission interface accepts `startup`, `scheduled`, `manual` and authenticated-`webhook` reconciliation sources, but this slice does not register timers or HTTP routes. No installed path dispatches model work or writes to Jira. Live Jira Cloud support remains unclaimed until issue #4 receives authorized synthetic resources and credential references.
+
 ## Installation
 
-The bootstrap can be installed from a locally packed artifact. It does not yet automate tickets, so no Jira, GitHub or model credential is required for this verification path.
+The pre-alpha bundle can be installed from a locally packed artifact. It does not yet automate tickets, so no Jira, GitHub or model credential is required for this verification path; the unconfigured Jira row remains unavailable for reconciliation while the Host still boots.
 
 Prerequisites: Git, [Node.js](https://nodejs.org/) 24 or newer, and [pnpm](https://pnpm.io/). DSH itself is invoked from the npm `latest` tag.
 
@@ -70,7 +85,7 @@ npx --yes @deepseek-ai/dsh@latest --profile autopilot --dump-config
 npx --yes @deepseek-ai/dsh@latest --profile autopilot --no-open
 ```
 
-The third DSH command must show a `dsh-autopilot` bundle layer containing the `autopilot` row. DSH prints the local Web URL when the final command boots. Omit `DSH_HOME` to use DSH's default profile location, or set it to an operator-owned directory before all four DSH commands to isolate the installation.
+The third DSH command must show a `dsh-autopilot` bundle layer containing the `autopilot` and `autopilot-jira` rows. DSH prints the local Web URL when the final command boots. Omit `DSH_HOME` to use DSH's default profile location, or set it to an operator-owned directory before all four DSH commands to isolate the installation.
 
 The future connection flow will live in DSH Web Settings. Editing `.env` is not the intended onboarding path; see [operations and configuration](docs/specs/operations.md) for the planned credential ownership model.
 
