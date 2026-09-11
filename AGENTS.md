@@ -4,6 +4,7 @@ Read the relevant GitHub issue and [documentation map](docs/README.md) before wo
 
 ## Implementation discipline
 
+- Continue work on the checked-out branch and deliver commits there. Create or switch to a feature branch, and open a pull request, only when the user explicitly requests that action.
 - Build the approved requirement; actively look for native capabilities that improve its reliability, usability or execution quality. Apply improvements within that behavior; propose material product changes on GitHub with evidence, benefit, cost and acceptance criteria. YAGNI limits speculative implementation, not discovery or proposals. Search the codebase first and reuse an existing implementation.
 - Autopilot is a DSH plugin. Before implementing a capability, inspect supported DSH services, plugins, presets and extension points; reuse or compose them. Implement only missing Autopilot behavior, not a replacement agent loop, Session store, credential system or Web shell. Verify suitability against current source/docs; surface a missing extension instead of silently rebuilding the harness.
 - Before adding code, check in order: standard library, native platform capability, then installed dependencies. Use the first suitable maintained option; write only the missing behavior.
