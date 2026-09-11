@@ -7,6 +7,7 @@ Read [scope](specs/scope.md) for product responsibilities and [CONTEXT](../CONTE
 | Information | Authoritative location |
 | --- | --- |
 | Agent operating rules | [AGENTS.md](../AGENTS.md); CLAUDE.md links to the same source |
+| Implementation and verification standards | [Engineering](engineering.md), adapted to this external plugin |
 | Domain terms | [CONTEXT.md](../CONTEXT.md), glossary only |
 | Stable behavior and proposed integration designs | `specs/`, using the reading map below |
 | Pinned sources and their limitations | `research/`, not implementation status |
@@ -21,6 +22,7 @@ Specs define required behavior and acceptance rules; a rule's existence does not
 | Working on | Read |
 | --- | --- |
 | Product boundaries | [Scope](specs/scope.md) |
+| Implementing or reviewing Host, Client, lifecycle, persistence or tests | [Engineering standards](engineering.md), [upstream basis](research/dsh-practices.md) |
 | Admission, human authorization, pause and recovery | [Lifecycle](specs/lifecycle.md) |
 | Provider composition and extension | [Providers](specs/providers.md) |
 | DSH execution outcomes, repo rules and delegation | [Execution](specs/execution.md) |

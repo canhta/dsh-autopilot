@@ -6,6 +6,14 @@ Use a normal external Cordis plugin/bundle and supported DSH profile launch. Kee
 
 Packaging and effect lifecycle are owned by [plugin engineering](plugin.md).
 
+## Unattended execution safeguards
+
+Compose the selected DSH permission/sandbox and tool-guard facilities as part of the execution preset; [native safeguards](../research/dsh-execution.md#native-safeguards) records their limits. Verify the effective composition rather than mounting duplicate guards already supplied by a bundle. Deployment policy selects allowed capabilities and limits; target-repository instructions still select coding and verification work.
+
+Exercise denied writes to unauthorized paths and publication attempts outside the designated executor through every enabled tool path, including MCP and child agents. Declare the actual writable roots, including any provider temporary-directory allowances. Permission presets select policy; enforcing providers apply it, and MCP servers do not automatically inherit a local filesystem sandbox. A permission label, hidden tool or prompt instruction is not proof of enforcement. If a tool needs human authorization that unattended operation cannot obtain, report the condition through the existing tracker-blocker flow; never grant itself broader permissions to finish.
+
+Preserve native repeated-call guidance where appropriate and configure supported per-tool deadlines. Advisory loop reminders do not enforce credit caps; cooperative timeouts do not prove an unresponsive process stopped. Reuse the capability's termination path, keep the run's pause pending until quiescent, and test tools that ignore cancellation. These strengthen the existing budget/pause requirements rather than introduce a separate watchdog framework.
+
 ## Execution requirements
 
 The selected DSH composition plus Autopilot's domain integration must support isolated worktrees, durable Session reconstruction after a real Host restart, quiescent pause, continuation with side-effect reconciliation, structured outcomes, supported usage interception, and headless operation. Source evidence is in [execution research](../research/dsh-execution.md); implementation/test progress belongs to the corresponding GitHub issue.
@@ -15,6 +23,8 @@ A checkpoint preserves continuation information, not OS process memory. Account 
 ## Conceptual execution interface
 
 These are required data exchanges, not proposed public DSH method names. Keep actual integration code private until the selected DSH API is verified.
+
+**Proposed implementation:** a run-scoped report tool composed through DSH's typed tool registry, using the [native outcome facilities](../research/dsh-execution.md#machine-checked-outcomes). Treat its validated payload as evidence input, not permission to publish. A failed enclosing tool/PTC call cannot seal successful completion; settle execution, confirm durable evidence and revalidate Git state through the existing publication gate. Preserve root ownership and use public APIs rather than a private subagent output helper.
 
 | Input | Required facts |
 | --- | --- |

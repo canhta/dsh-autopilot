@@ -2,6 +2,8 @@
 
 This page owns the proposed DSH plugin integration design. Upstream interface names require verification against the selected DSH version; source evidence is in [DSH research](../research/dsh.md). Required provider extensibility is owned by [provider architecture](providers.md).
 
+Implementation and verification follow [engineering standards](../engineering.md); this page owns Autopilot's DSH composition choices.
+
 ## Reuse before implementation
 
 For each capability being implemented, follow the [DSH capability reading map](../research/dsh.md#capability-reading-map). Identify the public service/export, compose its provider and consumers, and verify the required behavior through the installed artifact. Autopilot owns ticket-to-PR policy and domain records, not the infrastructure used to execute that policy. A component or service name in these specs denotes a responsibility, not a mandate to write a new framework.

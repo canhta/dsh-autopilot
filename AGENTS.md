@@ -4,7 +4,7 @@ Read the relevant GitHub issue and [documentation map](docs/README.md) before wo
 
 ## Implementation discipline
 
-- Build only what the current requirement needs. Search the codebase first and reuse an existing implementation.
+- Build the approved requirement; actively look for native capabilities that improve its reliability, usability or execution quality. Apply improvements within that behavior; propose material product changes on GitHub with evidence, benefit, cost and acceptance criteria. YAGNI limits speculative implementation, not discovery or proposals. Search the codebase first and reuse an existing implementation.
 - Autopilot is a DSH plugin. Before implementing a capability, inspect supported DSH services, plugins, presets and extension points; reuse or compose them. Implement only missing Autopilot behavior, not a replacement agent loop, Session store, credential system or Web shell. Verify suitability against current source/docs; surface a missing extension instead of silently rebuilding the harness.
 - Before adding code, check in order: standard library, native platform capability, then installed dependencies. Use the first suitable maintained option; write only the missing behavior.
 - Prefer the smallest readable implementation. Keep a one-line solution when it is clear; do not compress code at the cost of comprehension or add speculative abstractions.
@@ -16,6 +16,8 @@ Read the relevant GitHub issue and [documentation map](docs/README.md) before wo
 ## Integration and documentation
 
 Verify DSH interfaces against a recorded source version; conceptual spec interfaces are not existing APIs. Keep vendor logic in provider plugins and use the shared Host policy for Web commands. Read the relevant specs and source research through the documentation map.
+
+When implementing or reviewing Host services, Client UI, lifecycle, persistence, public APIs or tests, follow [plugin engineering standards](docs/engineering.md). They adapt DSH's practices to this external plugin; upstream monorepo conventions do not automatically become this repository's policy.
 
 Each rule has one documentation owner. Keep reusable behavior in specs and dated source observations in research; record work progress, open questions, review findings and test results on GitHub. Never commit credentials, live ticket content, runtime worktrees or execution transcripts. Report only verification actually performed.
 

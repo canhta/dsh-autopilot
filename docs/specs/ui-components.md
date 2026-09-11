@@ -2,6 +2,8 @@
 
 This page owns Client decomposition, data/command behavior and functional acceptance. [Web UI](web-ui.md) owns navigation, visual rules, journeys and visual acceptance. Names below are Autopilot responsibilities, not instructions to create new components when DSH already supplies them; see [DSH Web reuse evidence](../research/dsh-web.md).
 
+Implement components using the [DSH Client discipline](../engineering.md#client-code), keeping data ownership and subscriptions outside presentation components.
+
 ## Module ownership
 
 | Module | Responsibility | Reads | Mutations |
@@ -28,6 +30,8 @@ Host state is authoritative. Modules use the existing DSH Remote client with Aut
 | `RunDetailPanel` | Header with ticket identity, lifecycle/reason and allowed actions. First show required human action or pause condition; completed runs show PR and verification. Then Brief/dependencies, ordered event timeline, verification, workspace/Session, spend and deliveries as collapsible sections. No second dashboard inside the panel. |
 
 Run detail uses composition: `BlockerCallout` renders numbered questions and the exact tracker action; `VerificationSummary` renders checks/results/skips and verified Git identity; `RunTimeline` renders timestamped normalized events, grouping repeated retries; `ResourceLinks` links to tracker, DSH Session, PR and worktree details. None derives success from prose or infers a next action from status color.
+
+Supply Session evidence through the existing DSH query/projection services described in [platform research](../research/dsh-platform.md#session-evidence-and-diagnostics). Restrict reads to the selected run's authorized Session/descendant identities, fetch bounded detail on demand and expose stale/unavailable evidence. Projection caches accelerate display; they do not determine run success, credit authorization or safe publication.
 
 The panel footer uses the operator-command policy below. Preserve scroll/selection if an update arrives; announce significant state changes without moving focus.
 
