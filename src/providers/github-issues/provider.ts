@@ -1,5 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
-import { createMcpTraversalCursorCodec, type McpReadTools, mountMcpTracker } from '../../mcp/index.js'
+import type { SettingsScope } from '@deepseek-ai/dsh-settings'
+import { createMcpTraversalCursorCodec, type McpTools, mountMcpTracker } from '../../mcp/index.js'
 import {
   TRACKER_INTERFACE_VERSION,
   type TrackerIssueSnapshot,
@@ -7,11 +8,13 @@ import {
   TrackerProviderError,
   trackerProviderId,
 } from '../../tracker.js'
+import type { ProviderSetupContribution } from '../../web.js'
 import { type GitHubCoordinate, githubMcpContracts } from './contracts.js'
 import { verifyGitHubIssuesIngress } from './ingress.js'
 import { normalizeIssue } from './normalization.js'
 import type { GitHubComment, GitHubDependency, GitHubIssue, GitHubTimelineEvent } from './schemas.js'
 import {
+  changesGitHubIssuesBinding,
   type GitHubIssuesSettings,
   githubIssuesSettingsSchema,
   requireConfiguredSettings,
@@ -25,16 +28,64 @@ export const inject = ['tracker', 'settings', 'credentials', 'tools']
 
 /** Register GitHub Settings and mount a provider only while its exact MCP capabilities are available. */
 export async function registerGitHubIssuesProvider(ctx: Context): Promise<() => Promise<void>> {
-  const settings = ctx.settings.register('dsh-autopilot-github-issues', githubIssuesSettingsSchema, {
-    validate: validateStoredSettings,
-  })
-  return mountMcpTracker(ctx, {
-    settings,
-    requiredToolset(current) {
-      return { serverName: current.mcpServerName, contracts: githubMcpContracts }
+  let settings: SettingsScope<GitHubIssuesSettings> | undefined
+  settings = ctx.settings.register('dsh-autopilot-github-issues', githubIssuesSettingsSchema, {
+    validate: (value) => {
+      validateStoredSettings(value)
+      const current = settings?.get()
+      if (!current || !changesGitHubIssuesBinding(current, value)) return
+      const admission = ctx.get('admission')
+      if (admission === undefined) {
+        throw new Error('Admission is unavailable; GitHub Issues binding changes are disabled')
+      }
+      const blocker = admission.trackerSwitchBlocker(String(githubIssuesProviderId))
+      if (blocker !== undefined) throw new Error(blocker)
     },
-    createProvider: (current, tools) => createGitHubIssuesProvider(ctx, current, tools),
   })
+  const registeredSettings = settings
+  const setup = ctx.get('autopilotWebContributions')?.registerProvider(githubSetup(registeredSettings))
+  try {
+    const unmount = await mountMcpTracker(ctx, {
+      settings: registeredSettings,
+      requiredToolset(current) {
+        return { serverName: current.mcpServerName, contracts: githubMcpContracts }
+      },
+      createProvider: (current, tools) => createGitHubIssuesProvider(ctx, current, tools),
+    })
+    return async () => {
+      await unmount()
+      setup?.()
+    }
+  } catch (error) {
+    setup?.()
+    throw error
+  }
+}
+
+function githubSetup(settings: { get(): Readonly<GitHubIssuesSettings> }): ProviderSetupContribution {
+  return {
+    providerId: 'github-issues',
+    displayName: 'GitHub Issues via official MCP',
+    configurationNamespace: 'dsh-autopilot-github-issues',
+    view() {
+      const value = settings.get()
+      return {
+        status: 'available',
+        mcpServerName: value.mcpServerName,
+        resources: [
+          { label: 'Repository', value: [value.repositoryOwner, value.repositoryName].filter(Boolean).join('/') },
+          { label: 'Repository id', value: value.repositoryId },
+          { label: 'Ready label', value: value.readyLabel },
+        ],
+        credentialRefs:
+          value.webhookSecretRef === '' ? [] : [{ label: 'Inbound webhook secret', ref: value.webhookSecretRef }],
+        lookup: {
+          status: 'unavailable',
+          reason: 'DSH does not expose GitHub MCP repository or label lookup to Client plugins at this version.',
+        },
+      }
+    },
+  }
 }
 
 export async function apply(ctx: Context): Promise<void> {
@@ -44,7 +95,7 @@ export async function apply(ctx: Context): Promise<void> {
 function createGitHubIssuesProvider(
   ctx: Context,
   snapshot: Readonly<GitHubIssuesSettings>,
-  tools: McpReadTools<typeof githubMcpContracts>,
+  tools: McpTools<typeof githubMcpContracts>,
 ): TrackerProvider {
   const config = requireConfiguredSettings(snapshot)
   const cursorCodec = createMcpTraversalCursorCodec()
@@ -105,7 +156,7 @@ function createGitHubIssuesProvider(
 async function hydrateIssue(
   issue: GitHubIssue,
   config: GitHubIssuesSettings,
-  tools: McpReadTools<typeof githubMcpContracts>,
+  tools: McpTools<typeof githubMcpContracts>,
   signal: AbortSignal,
 ): Promise<TrackerIssueSnapshot> {
   const coordinate = {
@@ -138,7 +189,7 @@ async function hydrateIssue(
 async function readComments(
   coordinate: GitHubCoordinate,
   config: GitHubIssuesSettings,
-  tools: McpReadTools<typeof githubMcpContracts>,
+  tools: McpTools<typeof githubMcpContracts>,
   signal: AbortSignal,
 ): Promise<GitHubComment[]> {
   const comments: GitHubComment[] = []
@@ -154,7 +205,7 @@ async function readComments(
 async function readTimeline(
   coordinate: GitHubCoordinate,
   config: GitHubIssuesSettings,
-  tools: McpReadTools<typeof githubMcpContracts>,
+  tools: McpTools<typeof githubMcpContracts>,
   signal: AbortSignal,
 ): Promise<GitHubTimelineEvent[]> {
   const events: GitHubTimelineEvent[] = []
@@ -173,7 +224,7 @@ async function readTimeline(
 async function readDependencies(
   coordinate: GitHubCoordinate,
   config: GitHubIssuesSettings,
-  tools: McpReadTools<typeof githubMcpContracts>,
+  tools: McpTools<typeof githubMcpContracts>,
   signal: AbortSignal,
 ): Promise<GitHubDependency[]> {
   const dependencies: GitHubDependency[] = []

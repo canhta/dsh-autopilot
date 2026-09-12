@@ -1,6 +1,7 @@
 import { type Context, Service } from '@deepseek-ai/cordis'
 import { AdmissionIngressError, type AdmissionSource, type ReconcileResult } from '../admission.js'
 import {
+  publicTrackerFailureMessage,
   type TrackerIngressRequest,
   TrackerProviderError,
   type TrackerProviderErrorCode,
@@ -179,8 +180,12 @@ export class Reconciliation extends Service {
     this.clearTimer()
     const startedAt = new Date().toISOString()
     this.active += 1
-    const attempt = this.ctx.admission
-      .reconcile({ source, signal: this.controller.signal })
+    const workflow = this.ctx.get('autopilotWorkflow')
+    const attempt = (
+      workflow === undefined
+        ? this.ctx.admission.reconcile({ source, signal: this.controller.signal })
+        : workflow.reconcile(source, this.controller.signal)
+    )
       .then((result) => {
         this.lastAttempt = successfulAttempt(source, startedAt, result)
       })
@@ -264,40 +269,11 @@ function sanitizedFailure(error: unknown): ReconciliationFailure {
   if (error instanceof TrackerProviderError) {
     return {
       code: error.code,
-      message: providerFailureMessage(error.code),
+      message: publicTrackerFailureMessage(error.code),
       ...(error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs }),
     }
   }
   return { code: 'internal', message: 'Reconciliation failed before it could commit.' }
-}
-
-function providerFailureMessage(code: TrackerProviderErrorCode): string {
-  switch (code) {
-    case 'authentication':
-      return 'Tracker authentication failed.'
-    case 'permission':
-      return 'Tracker access was denied.'
-    case 'invalid-configuration':
-      return 'Tracker configuration is invalid or incomplete.'
-    case 'not-found':
-      return 'A configured tracker resource was not found.'
-    case 'conflict':
-      return 'Tracker state could not be reconciled safely.'
-    case 'rate-limit':
-      return 'Tracker rate limiting deferred reconciliation.'
-    case 'timeout':
-      return 'The tracker request timed out.'
-    case 'transient':
-      return 'The tracker was temporarily unavailable.'
-    case 'unsupported-capability':
-      return 'The selected tracker does not support this operation.'
-    case 'ambiguous-acknowledgement':
-      return 'Tracker acknowledgement could not be confirmed.'
-    case 'invalid-response':
-      return 'The tracker returned an invalid or unsafe response.'
-    case 'provider-unavailable':
-      return 'The selected tracker provider is unavailable.'
-  }
 }
 
 export default Reconciliation

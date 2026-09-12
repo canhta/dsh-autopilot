@@ -6,7 +6,7 @@ Read only the configured project's candidates and their required context: stable
 
 Receive authenticated tracker webhooks and run scheduled/startup reconciliation. Verify authenticity using the supported mechanism for the configured webhook type. Persist enough ingress information before acknowledging acceptance; fetch current tracker state instead of trusting an old event snapshot. Filter project/label locally as needed when webhook subscription filters cannot express the rule.
 
-Use existing DSH Host routing and suitable ingress adapters; [platform research](../research/dsh-platform.md#timing-ingress-and-git) identifies what they do and do not guarantee. Provider-specific verification and Autopilot admission durability remain required; do not create an independent HTTP server merely to receive events.
+Use existing DSH Host routing and suitable ingress adapters. Provider-specific verification and Autopilot admission durability remain required; do not create an independent HTTP server merely to receive events.
 
 Treat provider-qualified tracker delivery IDs as ingress retry identifiers, not complete run uniqueness keys. Use the shared [admission policy](lifecycle.md) for all sources. Invoke only the exact tools declared by the selected provider, bound to one live DSH tool generation; never ask a model or discovery tool to choose admission operations. Paginate candidates and nested evidence under byte/page/item bounds. A tracker update timestamp alone cannot prove a human readiness transition. Normalize vendor-specific facts through the selected provider; never call MCP tools or vendor clients from core admission.
 
@@ -72,7 +72,7 @@ Delivery is at least once across uncertain external acknowledgements. Reuse stab
 
 ## Provider evidence
 
-Jira Cloud currently informs the Jira provider; resolve other Jira editions through the provider connection issue. [Tracker MCP](../research/tracker-mcp.md), [GitHub Issues](../research/github-issues.md), [Linear](../research/linear.md) and [Bitbucket](../research/bitbucket.md) own source findings and limitations. Shared conformance and extension requirements belong to [provider architecture](providers.md). A provider must preserve all shared behavior, not merely expose a vendor tool with a similar name.
+Jira Cloud currently informs the Jira provider; resolve other Jira editions through the provider connection issue. Shared conformance and extension requirements for Jira, GitHub Issues, future Linear and future Bitbucket integrations belong to [provider architecture](providers.md). A provider must preserve all shared behavior, not merely expose a vendor tool with a similar name.
 
 ## Acceptance scenarios and references
 

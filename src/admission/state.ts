@@ -1,7 +1,7 @@
-import { createHash } from 'node:crypto'
 import { SessionId as sessionId } from '@deepseek-ai/dsh-session'
-import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
 import { z } from 'zod'
+import { codeHostBindingId, codeHostProviderId, codeHostRepositoryId, pullRequestId } from '../code-host.js'
+import { notificationDestinationId, notificationProviderId } from '../notification.js'
 import {
   readinessGeneration,
   trackerBindingId,
@@ -13,14 +13,15 @@ import {
   ID_PATTERN,
   MAX_BRIEF_BYTES,
   MAX_INGRESS_RECEIPTS,
+  MAX_OPERATOR_COMMANDS,
   MAX_OUTCOME_TEXT_BYTES,
   MAX_STATE_BYTES,
   MAX_SUMMARY_BYTES,
-  type STATE_KEY,
   textEncoder,
 } from './constants.js'
-import type { AdmissionSnapshot, RunId } from './model.js'
-import { boundedNonEmptyString, compareSnapshotRuns, isPausedActiveRun, runId, runIdentityFromRun } from './policy.js'
+import type { RunId } from './model.js'
+import { boundedNonEmptyString } from './policy.js'
+import { validateStateIntegrity } from './state-integrity.js'
 
 const briefSchema = z.object({
   commentId: z.string().min(1).max(256).transform(trackerCommentId),
@@ -36,6 +37,33 @@ export const runIdSchema = z
   .regex(/^run_[a-f0-9]{32}$/)
   .transform((value) => value as RunId)
 
+export const operatorCommandKindSchema = z.enum([
+  'pause-scheduler',
+  'resume-scheduler',
+  'drain',
+  'reconcile',
+  'pause-run',
+  'resume-run',
+  'cancel-run',
+  'retry-delivery',
+  'remove-worktree',
+])
+export type OperatorCommandKind = z.infer<typeof operatorCommandKindSchema>
+
+export const operatorCommandSchema = z.object({
+  requestId: z.string().uuid(),
+  kind: operatorCommandKindSchema,
+  runId: runIdSchema.optional(),
+  deliveryId: z.string().min(1).max(512).optional(),
+  previewId: z.string().uuid().optional(),
+  status: z.enum(['accepted', 'in-progress', 'succeeded', 'rejected']),
+  acceptedAt: z.iso.datetime({ offset: true }),
+  finishedAt: z.iso.datetime({ offset: true }).optional(),
+  message: z.string().max(500).optional(),
+  revision: z.number().int().nonnegative().optional(),
+})
+export type OperatorCommandRecord = z.infer<typeof operatorCommandSchema>
+
 const runBaseSchema = z.object({
   runId: runIdSchema,
   providerId: z.string().transform(trackerProviderId),
@@ -48,6 +76,7 @@ const runBaseSchema = z.object({
   priorityRank: z.number().int().nonnegative(),
   readinessGeneration: z.string().transform(readinessGeneration),
   brief: briefSchema,
+  deliveries: z.array(z.lazy(() => deliverySchema)).max(64),
   queueClass: z.enum(['new', 'resumption']),
   queuedAt: z.iso.datetime({ offset: true }),
   queueSequence: z.number().int().positive(),
@@ -60,6 +89,29 @@ export const executionSchema = z.object({
   baseBranch: z.string().min(1).max(256),
   worktreePath: z.string().min(1).max(4096),
   branch: z.string().min(1).max(256),
+  agent: z
+    .object({
+      presetId: z.string().min(1).max(256),
+      presetFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      permission: z.object({
+        presetId: z.string().min(1).max(256),
+        sandbox: z.enum(['read-only', 'workspace-write', 'danger-full-access']),
+        approval: z.literal('never'),
+      }),
+      model: z.object({
+        provider: z.string().min(1).max(256),
+        model: z.string().min(1).max(512),
+        reasoningEffort: z.string().min(1).max(128).optional(),
+      }),
+    })
+    .optional(),
+  codeHost: z.object({
+    providerId: z.string().transform(codeHostProviderId),
+    bindingId: z.string().transform(codeHostBindingId),
+    repositoryId: z.string().transform(codeHostRepositoryId),
+    repository: z.string().min(1).max(512),
+    allowWorkflowChanges: z.boolean(),
+  }),
   startedAt: z.iso.datetime({ offset: true }),
   git: z
     .object({
@@ -71,7 +123,13 @@ export const executionSchema = z.object({
   recovery: z
     .object({
       kind: z.literal('required'),
-      reason: z.enum(['host-restart', 'session-unavailable', 'workspace-unavailable', 'worktree-mismatch']),
+      reason: z.enum([
+        'host-restart',
+        'composition-unavailable',
+        'session-unavailable',
+        'workspace-unavailable',
+        'worktree-mismatch',
+      ]),
       interruptedAt: z.iso.datetime({ offset: true }),
     })
     .optional(),
@@ -90,6 +148,19 @@ const outcomeBaseSchema = z.object({
   summary: boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'outcome summary'),
   evidence: z.array(boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'outcome evidence')).max(100),
 })
+const verificationResultSchema = z
+  .object({
+    command: boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'verification command'),
+    status: z.enum(['passed', 'failed', 'skipped']),
+    summary: boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'verification summary'),
+    reason: boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'verification reason').optional(),
+  })
+  .superRefine((value, context) => {
+    if ((value.status === 'skipped') !== (value.reason !== undefined)) {
+      context.addIssue({ code: 'custom', message: 'only skipped verification requires a reason' })
+    }
+  })
+const blockedOutcomeSchema = outcomeBaseSchema.extend({ kind: z.literal('blocked') })
 export const outcomeSchema = z.discriminatedUnion('kind', [
   outcomeBaseSchema.extend({
     kind: z.literal('verified'),
@@ -97,9 +168,135 @@ export const outcomeSchema = z.discriminatedUnion('kind', [
       head: z.string().regex(/^[a-f0-9]{40,64}$/),
       status: z.string().max(1024 * 1024),
     }),
+    verification: z.array(verificationResultSchema).min(1).max(100),
+    suggestedPullRequest: z.object({
+      title: boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'pull-request title'),
+      body: boundedNonEmptyString(32 * 1024, 'pull-request body'),
+    }),
   }),
-  outcomeBaseSchema.extend({ kind: z.literal('blocked') }),
+  blockedOutcomeSchema,
   outcomeBaseSchema.extend({ kind: z.literal('failed') }),
+])
+
+const receiptSchema = z.object({
+  id: z.string().min(1).max(256).transform(pullRequestId),
+  number: z.number().int().positive().safe(),
+  url: z.url().max(4096),
+  state: z.enum(['open', 'merged', 'closed-unmerged']),
+  baseBranch: z.string().min(1).max(256),
+  headBranch: z.string().min(1).max(256),
+  remoteHead: z.string().regex(/^[a-f0-9]{40}$/),
+})
+
+const publicationSchema = z.object({
+  id: z.string().regex(/^publication:run_[a-f0-9]{32}$/),
+  revision: z.number().int().positive(),
+  providerId: z.string().transform(codeHostProviderId),
+  bindingId: z.string().transform(codeHostBindingId),
+  repositoryId: z.string().transform(codeHostRepositoryId),
+  repository: z.string().min(1).max(512),
+  baseBranch: z.string().min(1).max(256),
+  headBranch: z.string().min(1).max(256),
+  baseHead: z.string().regex(/^[a-f0-9]{40,64}$/),
+  localHead: z.string().regex(/^[a-f0-9]{40,64}$/),
+  marker: z.string().min(1).max(256),
+  title: boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'publication title'),
+  body: boundedNonEmptyString(32 * 1024, 'publication body'),
+  status: z.enum(['pending', 'in-flight', 'uncertain', 'retryable-failure', 'exhausted', 'failed', 'succeeded']),
+  attempts: z.number().int().nonnegative(),
+  owner: z.string().uuid().optional(),
+  nextRetryAt: z.iso.datetime({ offset: true }).optional(),
+  exhaustedFrom: z.enum(['uncertain', 'retryable-failure']).optional(),
+  lastError: boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'publication error').optional(),
+  branchReceipt: z
+    .object({
+      remoteHead: z.string().regex(/^[a-f0-9]{40}$/),
+      receivedAt: z.iso.datetime({ offset: true }),
+    })
+    .optional(),
+  receipt: receiptSchema.optional(),
+})
+
+const deliveryBaseSchema = z.object({
+  id: z.string().regex(/^delivery:[a-f0-9]{40}$/),
+  eventId: z.string().regex(/^event:[a-f0-9]{40}$/),
+  revision: z.number().int().positive(),
+  status: z.enum([
+    'pending',
+    'in-flight',
+    'uncertain',
+    'retryable-failure',
+    'exhausted',
+    'permanent-failure',
+    'succeeded',
+    'retired',
+  ]),
+  attempts: z.number().int().nonnegative(),
+  owner: z.string().uuid().optional(),
+  nextRetryAt: z.iso.datetime({ offset: true }).optional(),
+  exhaustedFrom: z.enum(['uncertain', 'retryable-failure']).optional(),
+  lastError: boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'delivery error').optional(),
+  receiptId: z.string().min(1).max(512).optional(),
+  receivedAt: z.iso.datetime({ offset: true }).optional(),
+})
+
+const trackerReportPayloadSchema = z.object({
+  kind: z.literal('report'),
+  deliveryId: z.string().min(1).max(512),
+  eventId: z.string().min(1).max(512),
+  bindingId: z.string().transform(trackerBindingId),
+  issueId: z.string().transform(trackerIssueId),
+  displayKey: z.string().min(1).max(256),
+  body: boundedNonEmptyString(32 * 1024, 'tracker report'),
+})
+const trackerProjectionPayloadSchema = z.object({
+  kind: z.literal('projection'),
+  deliveryId: z.string().min(1).max(512),
+  eventId: z.string().min(1).max(512),
+  bindingId: z.string().transform(trackerBindingId),
+  issueId: z.string().transform(trackerIssueId),
+  displayKey: z.string().min(1).max(256),
+  readinessGeneration: z.string().transform(readinessGeneration),
+  runRevision: z.number().int().nonnegative(),
+  desiredState: z.enum(['queued', 'implementing', 'paused', 'blocked', 'failed', 'completed']),
+})
+
+const notificationEventSchema = z.object({
+  version: z.literal(1),
+  eventId: z.string().min(1).max(512),
+  runId: z.string().min(1).max(256),
+  timestamp: z.iso.datetime({ offset: true }),
+  type: z.enum(['started', 'blocked', 'paused', 'failed', 'completed']),
+  issueIdentity: z.string().min(1).max(1024),
+  displayKey: z.string().min(1).max(256),
+  summary: boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'notification summary'),
+  actionNeeded: boundedNonEmptyString(MAX_OUTCOME_TEXT_BYTES, 'notification action').optional(),
+  runUrl: z.url().max(4096),
+  issueUrl: z.url().max(4096),
+  pullRequestUrl: z.url().max(4096).optional(),
+  usage: z.object({
+    kind: z.enum(['provider', 'estimate', 'unknown']),
+    tokens: z.number().int().nonnegative().optional(),
+  }),
+})
+
+const deliverySchema = z.discriminatedUnion('kind', [
+  deliveryBaseSchema.extend({
+    kind: z.literal('tracker-report'),
+    providerId: z.string().transform(trackerProviderId),
+    payload: trackerReportPayloadSchema,
+  }),
+  deliveryBaseSchema.extend({
+    kind: z.literal('tracker-projection'),
+    providerId: z.string().transform(trackerProviderId),
+    payload: trackerProjectionPayloadSchema,
+  }),
+  deliveryBaseSchema.extend({
+    kind: z.literal('notification'),
+    providerId: z.string().transform(notificationProviderId),
+    destinationId: z.string().transform(notificationDestinationId),
+    payload: notificationEventSchema,
+  }),
 ])
 
 const queuedRunSchema = runBaseSchema.extend({ state: z.literal('queued') })
@@ -148,11 +345,33 @@ const pausedActiveRunSchema = runBaseSchema.extend({
   }),
 })
 const terminalRunSchema = runBaseSchema.extend({
-  state: z.enum(['publishing', 'blocked', 'failed']),
+  state: z.enum(['publishing', 'completed', 'blocked', 'failed']),
   execution: executionSchema,
   budget: runBudgetSchema,
   outcome: outcomeSchema,
   completedAt: z.iso.datetime({ offset: true }),
+  publication: publicationSchema.optional(),
+})
+const cancellationBaseSchema = z.object({
+  requestId: z.string().uuid(),
+  cancelledAt: z.iso.datetime({ offset: true }),
+})
+const cancelledQueuedRunSchema = queuedRunSchema.omit({ state: true }).extend({
+  state: z.literal('cancelled'),
+  cancellation: cancellationBaseSchema.extend({ from: z.literal('queued') }),
+})
+const cancelledPausedQueuedRunSchema = pausedQueuedRunSchema.omit({ state: true }).extend({
+  state: z.literal('cancelled'),
+  cancellation: cancellationBaseSchema.extend({ from: z.literal('paused-queued') }),
+})
+const cancelledPausedActiveRunSchema = pausedActiveRunSchema.omit({ state: true }).extend({
+  state: z.literal('cancelled'),
+  cancellation: cancellationBaseSchema.extend({ from: z.literal('paused-active') }),
+})
+const cancelledBlockedRunSchema = terminalRunSchema.omit({ state: true, outcome: true }).extend({
+  state: z.literal('cancelled'),
+  outcome: blockedOutcomeSchema,
+  cancellation: cancellationBaseSchema.extend({ from: z.literal('blocked') }),
 })
 const runSchema = z.union([
   queuedRunSchema,
@@ -161,129 +380,54 @@ const runSchema = z.union([
   pausingRunSchema,
   pausedActiveRunSchema,
   terminalRunSchema,
+  cancelledQueuedRunSchema,
+  cancelledPausedQueuedRunSchema,
+  cancelledPausedActiveRunSchema,
+  cancelledBlockedRunSchema,
 ])
 export const schedulerModeSchema = z.enum(['enabled', 'draining', 'disabled'])
 const schedulerSchema = z.object({
   mode: schedulerModeSchema,
   changedAt: z.iso.datetime({ offset: true }),
 })
+const aggregateBudgetSchema = z.object({
+  reservedTokens: z.number().int().nonnegative(),
+  settledTokens: z.number().int().nonnegative(),
+  usageUncertain: z.boolean(),
+})
 
 export const stateSchema = z
   .object({
-    schemaVersion: z.literal(6),
+    schemaVersion: z.literal(7),
     revision: z.number().int().nonnegative(),
     nextSequence: z.number().int().positive(),
-    runs: z.array(runSchema).max(100),
+    runs: z.array(runSchema),
     acceptedIngress: z.array(z.string().min(1).max(512).regex(ID_PATTERN)).max(MAX_INGRESS_RECEIPTS),
+    operatorCommands: z.array(operatorCommandSchema).max(MAX_OPERATOR_COMMANDS).default([]),
     scheduler: schedulerSchema,
-    budget: z.object({
-      reservedTokens: z.number().int().nonnegative(),
-      settledTokens: z.number().int().nonnegative(),
-      usageUncertain: z.boolean(),
-    }),
+    budget: aggregateBudgetSchema,
   })
-  .superRefine((value, context) => {
-    const identities = value.runs.map(runIdentityFromRun)
-    const sequences = value.runs.map((run) => run.queueSequence)
-    const addIntegrityIssue = (message: string): void => {
-      context.addIssue({ code: 'custom', message })
-    }
-    if (new Set(value.runs.map((run) => run.runId)).size !== value.runs.length) {
-      addIntegrityIssue('run ids must be unique')
-    }
-    if (new Set(sequences).size !== sequences.length) addIntegrityIssue('queue sequences must be unique')
-    if (new Set(value.acceptedIngress).size !== value.acceptedIngress.length) {
-      addIntegrityIssue('accepted ingress ids must be unique')
-    }
-    if (value.runs.some((run, index) => run.runId !== runId(identities[index] ?? ''))) {
-      addIntegrityIssue('run ids must match their durable identities')
-    }
-    if (value.runs.some((run) => createHash('sha256').update(run.brief.content).digest('hex') !== run.brief.digest)) {
-      addIntegrityIssue('Brief digests must match retained content')
-    }
-    if (value.scheduler.mode === 'disabled' && value.runs.some((run) => run.state === 'implementing')) {
-      addIntegrityIssue('disabled scheduler cannot retain an implementing run')
-    }
-    if (sequences.length > 0 && value.nextSequence <= Math.max(...sequences)) {
-      addIntegrityIssue('next queue sequence must follow every retained run')
-    }
-    const runReservations = value.runs.reduce(
-      (total, run) => total + ('budget' in run ? run.budget.reservedTokens : 0),
-      0,
-    )
-    if (runReservations !== value.budget.reservedTokens) {
-      addIntegrityIssue('deployment reservation must equal active run reservations')
-    }
-    const runSettlements = value.runs.reduce(
-      (total, run) => total + ('budget' in run ? run.budget.settledTokens : 0),
-      0,
-    )
-    if (runSettlements !== value.budget.settledTokens) {
-      addIntegrityIssue('deployment settlement must equal retained run settlements')
-    }
-    const uncertain = value.runs.some((run) => 'budget' in run && run.budget.usageUncertain)
-    if (uncertain !== value.budget.usageUncertain) {
-      addIntegrityIssue('deployment usage uncertainty must match retained run uncertainty')
-    }
-    for (const run of value.runs) {
-      if ('budget' in run && run.budget.usageUncertain !== (run.budget.usageUncertaintyReason !== undefined)) {
-        addIntegrityIssue('run usage uncertainty must retain exactly one actionable reason')
-      }
-      if (
-        (run.state === 'pausing' || isPausedActiveRun(run)) &&
-        run.pause.operatorHold !== (run.pause.reason === 'operator')
-      ) {
-        addIntegrityIssue('active operator pause reason and hold must agree')
-      }
-      if ((run.state === 'implementing' || run.state === 'pausing') && run.budget.usageUncertain) {
-        addIntegrityIssue('active runs cannot carry uncertain usage')
-      }
-      if ('budget' in run && run.budget.settledTokens + run.budget.reservedTokens > run.budget.capTokens) {
-        addIntegrityIssue('run settled usage and reservation must stay within its retained cap')
-      }
-      if ('budget' in run && run.budget.reservedTokens > run.budget.allowanceTokens) {
-        addIntegrityIssue('run reservation must stay within its immutable attempt allowance')
-      }
-      if (run.state === 'publishing' && run.outcome.kind !== 'verified') {
-        addIntegrityIssue('publishing runs require a verified outcome')
-      }
-      if ((run.state === 'blocked' || run.state === 'failed') && run.outcome.kind !== run.state) {
-        addIntegrityIssue('terminal lifecycle state must match its structured outcome')
-      }
-    }
-  })
+  .superRefine(validateStateIntegrity)
   .refine((value) => textEncoder.encode(JSON.stringify(value)).byteLength <= MAX_STATE_BYTES, {
     error: `admission state must not exceed ${String(MAX_STATE_BYTES)} UTF-8 bytes`,
   })
 
 export type AdmissionState = z.infer<typeof stateSchema>
 
-export const admissionDomainSpec = defineDomain({
-  name: 'autopilot_admission',
-  version: 6,
-  tables: {
-    state: domainTable<typeof STATE_KEY, AdmissionState>(stateSchema),
-  },
-})
+export const legacyAdmissionStateSchema = z
+  .object({
+    schemaVersion: z.literal(6),
+    revision: z.number().int().nonnegative(),
+    nextSequence: z.number().int().positive(),
+    runs: z.array(z.unknown()),
+    acceptedIngress: z.array(z.string().min(1).max(512).regex(ID_PATTERN)).max(MAX_INGRESS_RECEIPTS),
+    scheduler: schedulerSchema,
+    budget: aggregateBudgetSchema,
+  })
+  .refine((value) => textEncoder.encode(JSON.stringify(value)).byteLength <= MAX_STATE_BYTES, {
+    error: `admission state must not exceed ${String(MAX_STATE_BYTES)} UTF-8 bytes`,
+  })
 
-export function initialState(): AdmissionState {
-  return {
-    schemaVersion: 6,
-    revision: 0,
-    nextSequence: 1,
-    runs: [],
-    acceptedIngress: [],
-    scheduler: { mode: 'enabled', changedAt: new Date().toISOString() },
-    budget: { reservedTokens: 0, settledTokens: 0, usageUncertain: false },
-  }
-}
-
-export function snapshotOf(state: AdmissionState): AdmissionSnapshot {
-  return {
-    revision: state.revision,
-    runs: structuredClone(state.runs).sort(compareSnapshotRuns),
-    acceptedIngress: [...state.acceptedIngress],
-    scheduler: structuredClone(state.scheduler),
-    budget: structuredClone(state.budget),
-  }
-}
+export type LegacyAdmissionState = z.infer<typeof legacyAdmissionStateSchema>
+export type StoredAdmissionState = AdmissionState | LegacyAdmissionState
+export const storedAdmissionStateSchema = z.union([stateSchema, legacyAdmissionStateSchema])

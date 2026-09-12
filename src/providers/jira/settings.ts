@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import s from '@deepseek-ai/schemastery'
 import { TrackerProviderError } from '../../tracker.js'
@@ -18,6 +19,41 @@ export interface JiraSettings {
   dependencyDirection: 'inward' | 'outward'
   automationAccountIds: string[]
   trustedHumanAccountIds: string[]
+  queuedLabel: string
+  implementingLabel: string
+  pausedLabel: string
+  blockedLabel: string
+  failedLabel: string
+  completedLabel: string
+  reviewTransitionId: string
+  reviewStatusId: string
+}
+
+const protectedSettingKeys = [
+  'mcpServerName',
+  'cloudId',
+  'projectId',
+  'integrationAccountId',
+  'readyLabel',
+  'priorityRanks',
+  'doneStatusIds',
+  'blockingLinkTypeIds',
+  'dependencyDirection',
+  'automationAccountIds',
+  'trustedHumanAccountIds',
+  'queuedLabel',
+  'implementingLabel',
+  'pausedLabel',
+  'blockedLabel',
+  'failedLabel',
+  'completedLabel',
+  'reviewTransitionId',
+  'reviewStatusId',
+] as const satisfies readonly (keyof JiraSettings)[]
+
+/** Whether a Settings edit would reinterpret an existing Jira run or delivery intent. */
+export function changesJiraBinding(current: JiraSettings, next: JiraSettings): boolean {
+  return protectedSettingKeys.some((key) => !isDeepStrictEqual(current[key], next[key]))
 }
 
 export const jiraSettingsSchema: s<JiraSettings> = s.object({
@@ -36,6 +72,14 @@ export const jiraSettingsSchema: s<JiraSettings> = s.object({
   dependencyDirection: s.union(['inward', 'outward'] as const).default('inward'),
   automationAccountIds: s.array(s.string()).default([]),
   trustedHumanAccountIds: s.array(s.string()).default([]),
+  queuedLabel: s.string().default('agent-queued'),
+  implementingLabel: s.string().default('agent-implementing'),
+  pausedLabel: s.string().default('agent-paused'),
+  blockedLabel: s.string().default('agent-blocked'),
+  failedLabel: s.string().default('agent-failed'),
+  completedLabel: s.string().default('agent-completed'),
+  reviewTransitionId: s.string().default(''),
+  reviewStatusId: s.string().default(''),
 })
 
 export function validateStoredSettings(config: JiraSettings): void {
@@ -60,6 +104,29 @@ export function validateStoredSettings(config: JiraSettings): void {
   if (config.integrationAccountId.length > 256) throw new TypeError('Jira integration account id is too long')
   if (config.readyLabel !== '' && !/^[^,\s]{1,255}$/.test(config.readyLabel)) {
     throw new TypeError('Jira ready label is invalid')
+  }
+  const projectionLabels = [
+    config.readyLabel,
+    config.queuedLabel,
+    config.implementingLabel,
+    config.pausedLabel,
+    config.blockedLabel,
+    config.failedLabel,
+    config.completedLabel,
+  ]
+  if (
+    projectionLabels.some((label) => !/^[^,\s]{1,255}$/.test(label)) ||
+    new Set(projectionLabels).size !== projectionLabels.length
+  ) {
+    throw new TypeError('Jira projection labels must be valid and unique')
+  }
+  for (const [name, value] of [
+    ['review transition', config.reviewTransitionId],
+    ['review status', config.reviewStatusId],
+  ] as const) {
+    if (value !== '' && (value.length > 256 || !/^[A-Za-z0-9_-]+$/.test(value))) {
+      throw new TypeError(`Jira ${name} id is invalid`)
+    }
   }
   if (Object.keys(config.priorityRanks).length > 256) throw new TypeError('Jira priority mapping is too large')
   for (const rank of Object.values(config.priorityRanks)) {
@@ -111,6 +178,9 @@ export function requireConfiguredSettings(config: JiraSettings): JiraSettings {
   }
   if (config.trustedHumanAccountIds.length === 0) {
     throw new TrackerProviderError('invalid-configuration', 'Jira trusted-human mapping is required')
+  }
+  if (config.reviewTransitionId === '' || config.reviewStatusId === '') {
+    throw new TrackerProviderError('invalid-configuration', 'Jira review transition and status mappings are required')
   }
   const automationIds = new Set([config.integrationAccountId, ...config.automationAccountIds])
   if (config.trustedHumanAccountIds.some((accountId) => automationIds.has(accountId))) {

@@ -1,4 +1,6 @@
 import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { CodeHostBindingId, CodeHostProviderId, CodeHostRepositoryId, PullRequestReceipt } from '../code-host.js'
+import type { NotificationEvent } from '../notification.js'
 import type {
   ReadinessGeneration,
   TrackerBindingId,
@@ -70,6 +72,7 @@ export interface QueuedRun {
   readonly priorityRank: number
   readonly readinessGeneration: ReadinessGeneration
   readonly brief: AgentBriefSnapshot
+  readonly deliveries: DeliveryRecord[]
   readonly state: 'queued'
   readonly queueClass: 'new' | 'resumption'
   readonly queuedAt: string
@@ -100,6 +103,22 @@ export interface ActivePauseSnapshot {
   readonly interruptedOperation: 'agent-turn'
 }
 
+/** Exact DSH composition captured for a run before it leaves the queue. */
+export interface AgentExecutionComposition {
+  readonly presetId: string
+  readonly presetFingerprint: string
+  readonly permission: {
+    readonly presetId: string
+    readonly sandbox: 'read-only' | 'workspace-write' | 'danger-full-access'
+    readonly approval: 'never'
+  }
+  readonly model: {
+    readonly provider: string
+    readonly model: string
+    readonly reasoningEffort?: string | undefined
+  }
+}
+
 export interface RunExecutionSnapshot {
   readonly attempt: number
   readonly sessionId: SessionId
@@ -107,6 +126,15 @@ export interface RunExecutionSnapshot {
   readonly baseBranch: string
   readonly worktreePath: string
   readonly branch: string
+  /** Absent only on durable records created before native DSH composition was captured. */
+  readonly agent?: AgentExecutionComposition | undefined
+  readonly codeHost: {
+    readonly providerId: CodeHostProviderId
+    readonly bindingId: CodeHostBindingId
+    readonly repositoryId: CodeHostRepositoryId
+    readonly repository: string
+    readonly allowWorkflowChanges: boolean
+  }
   readonly startedAt: string
   readonly git?: GitExecutionSnapshot | undefined
   readonly recovery?: RunRecoverySnapshot | undefined
@@ -120,7 +148,12 @@ export interface GitExecutionSnapshot {
 
 export interface RunRecoverySnapshot {
   readonly kind: 'required'
-  readonly reason: 'host-restart' | 'session-unavailable' | 'workspace-unavailable' | 'worktree-mismatch'
+  readonly reason:
+    | 'host-restart'
+    | 'composition-unavailable'
+    | 'session-unavailable'
+    | 'workspace-unavailable'
+    | 'worktree-mismatch'
   readonly interruptedAt: string
 }
 
@@ -160,19 +193,64 @@ export type ExecutionOutcome =
       readonly summary: string
       readonly evidence: string[]
       readonly reportedGit: Pick<GitExecutionSnapshot, 'head' | 'status'>
+      readonly verification: VerificationResult[]
+      readonly suggestedPullRequest: SuggestedPullRequest
     }
   | { readonly kind: 'blocked'; readonly summary: string; readonly evidence: string[] }
   | { readonly kind: 'failed'; readonly summary: string; readonly evidence: string[] }
 
 export interface TerminalRun extends Omit<QueuedRun, 'state'> {
-  readonly state: 'publishing' | 'blocked' | 'failed'
+  readonly state: 'publishing' | 'completed' | 'blocked' | 'failed'
   readonly execution: RunExecutionSnapshot
   readonly budget: RunBudgetSnapshot
   readonly outcome: ExecutionOutcome
   readonly completedAt: string
+  readonly publication?: PublicationIntent | undefined
 }
 
-export type AutopilotRun = QueuedRun | PausedQueuedRun | ImplementingRun | PausingRun | PausedActiveRun | TerminalRun
+export type RunCancellationSource = 'queued' | 'paused-queued' | 'paused-active' | 'blocked'
+
+export interface RunCancellationSnapshot<Source extends RunCancellationSource = RunCancellationSource> {
+  readonly requestId: string
+  readonly cancelledAt: string
+  readonly from: Source
+}
+
+export interface CancelledQueuedRun extends Omit<QueuedRun, 'state'> {
+  readonly state: 'cancelled'
+  readonly cancellation: RunCancellationSnapshot<'queued'>
+}
+
+export interface CancelledPausedQueuedRun extends Omit<PausedQueuedRun, 'state'> {
+  readonly state: 'cancelled'
+  readonly cancellation: RunCancellationSnapshot<'paused-queued'>
+}
+
+export interface CancelledPausedActiveRun extends Omit<PausedActiveRun, 'state'> {
+  readonly state: 'cancelled'
+  readonly cancellation: RunCancellationSnapshot<'paused-active'>
+}
+
+export interface CancelledBlockedRun extends Omit<TerminalRun, 'state' | 'outcome'> {
+  readonly state: 'cancelled'
+  readonly outcome: Extract<ExecutionOutcome, { kind: 'blocked' }>
+  readonly cancellation: RunCancellationSnapshot<'blocked'>
+}
+
+export type CancelledRun =
+  | CancelledQueuedRun
+  | CancelledPausedQueuedRun
+  | CancelledPausedActiveRun
+  | CancelledBlockedRun
+
+export type AutopilotRun =
+  | QueuedRun
+  | PausedQueuedRun
+  | ImplementingRun
+  | PausingRun
+  | PausedActiveRun
+  | TerminalRun
+  | CancelledRun
 
 export type RunUsageSettlement =
   | { readonly kind: 'known'; readonly tokens: number }
@@ -191,6 +269,82 @@ export interface AdmissionSnapshot {
   budget: AdmissionBudgetSnapshot
   scheduler: SchedulerSnapshot
 }
+
+export interface VerificationResult {
+  readonly command: string
+  readonly status: 'passed' | 'failed' | 'skipped'
+  readonly summary: string
+  readonly reason?: string | undefined
+}
+
+export interface SuggestedPullRequest {
+  readonly title: string
+  readonly body: string
+}
+
+export interface PublicationIntent {
+  readonly id: string
+  readonly revision: number
+  readonly providerId: CodeHostProviderId
+  readonly bindingId: CodeHostBindingId
+  readonly repositoryId: CodeHostRepositoryId
+  readonly repository: string
+  readonly baseBranch: string
+  readonly headBranch: string
+  readonly baseHead: string
+  readonly localHead: string
+  readonly marker: string
+  readonly title: string
+  readonly body: string
+  readonly status: 'pending' | 'in-flight' | 'uncertain' | 'retryable-failure' | 'exhausted' | 'failed' | 'succeeded'
+  readonly attempts: number
+  readonly owner?: string | undefined
+  readonly nextRetryAt?: string | undefined
+  readonly exhaustedFrom?: 'uncertain' | 'retryable-failure' | undefined
+  readonly lastError?: string | undefined
+  readonly branchReceipt?: { readonly remoteHead: string; readonly receivedAt: string } | undefined
+  readonly receipt?: PullRequestReceipt | undefined
+}
+
+export interface DeliveryRecordBase {
+  readonly id: string
+  readonly eventId: string
+  readonly revision: number
+  readonly status:
+    | 'pending'
+    | 'in-flight'
+    | 'uncertain'
+    | 'retryable-failure'
+    | 'exhausted'
+    | 'permanent-failure'
+    | 'succeeded'
+    | 'retired'
+  readonly attempts: number
+  readonly owner?: string | undefined
+  readonly nextRetryAt?: string | undefined
+  readonly exhaustedFrom?: 'uncertain' | 'retryable-failure' | undefined
+  readonly lastError?: string | undefined
+  readonly receiptId?: string | undefined
+  readonly receivedAt?: string | undefined
+}
+
+export type DeliveryRecord =
+  | (DeliveryRecordBase & {
+      readonly kind: 'tracker-report'
+      readonly providerId: TrackerProviderId
+      readonly payload: Extract<import('../tracker.js').TrackerOutboundDelivery, { kind: 'report' }>
+    })
+  | (DeliveryRecordBase & {
+      readonly kind: 'tracker-projection'
+      readonly providerId: TrackerProviderId
+      readonly payload: Extract<import('../tracker.js').TrackerOutboundDelivery, { kind: 'projection' }>
+    })
+  | (DeliveryRecordBase & {
+      readonly kind: 'notification'
+      readonly providerId: import('../notification.js').NotificationProviderId
+      readonly destinationId: import('../notification.js').NotificationDestinationId
+      readonly payload: NotificationEvent
+    })
 
 export interface ReconcileResult extends AdmissionSnapshot {
   decisions: readonly AdmissionDecision[]

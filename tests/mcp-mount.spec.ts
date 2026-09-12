@@ -5,7 +5,7 @@ import ToolRuntime, { type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import s from '@deepseek-ai/schemastery'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
-import { defineMcpReadContracts, type McpReadTools, mountMcpTracker } from '../src/mcp/index.js'
+import { defineMcpContracts, type McpTools, mountMcpTracker } from '../src/mcp/index.js'
 import { TRACKER_INTERFACE_VERSION, Tracker, type TrackerProvider, trackerProviderId } from '../src/tracker.js'
 import { MemorySettings } from './dsh-fixtures.js'
 
@@ -19,7 +19,7 @@ const fixtureSettingsSchema: s<FixtureSettings> = s.object({
   project: s.string().default('AUTO'),
 })
 
-const contracts = defineMcpReadContracts({
+const contracts = defineMcpContracts({
   listCandidates: {
     rawName: 'list_issues',
     maxResultBytes: 1_024,
@@ -61,7 +61,7 @@ async function setup(): Promise<{ ctx: Context; settings: SettingsScope<FixtureS
   return { ctx, settings, stop }
 }
 
-function fixtureProvider(settings: Readonly<FixtureSettings>, tools: McpReadTools<typeof contracts>): TrackerProvider {
+function fixtureProvider(settings: Readonly<FixtureSettings>, tools: McpTools<typeof contracts>): TrackerProvider {
   return {
     id: trackerProviderId('mcp-fixture'),
     interfaceVersion: TRACKER_INTERFACE_VERSION,

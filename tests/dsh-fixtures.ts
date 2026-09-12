@@ -1,6 +1,8 @@
-import { Context, type Fiber } from '@deepseek-ai/cordis'
-import AgentRegistry from '@deepseek-ai/dsh-agent'
+import { Context, type Fiber, Service } from '@deepseek-ai/cordis'
+import AgentRegistry, { type ModelSelection } from '@deepseek-ai/dsh-agent'
+import type {} from '@deepseek-ai/dsh-agent-default-model'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
+import type {} from '@deepseek-ai/dsh-agent-presets'
 import Credentials, {
   type CredentialKey,
   type CredentialRecord,
@@ -9,6 +11,7 @@ import Credentials, {
   type CredentialRef,
 } from '@deepseek-ai/dsh-credentials'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
+import type {} from '@deepseek-ai/dsh-permission-presets'
 import SessionStore from '@deepseek-ai/dsh-session'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SessionProjectionRegistry from '@deepseek-ai/dsh-session-projection'
@@ -20,6 +23,93 @@ import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime from '@deepseek-ai/dsh-tools'
 import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
+import { issuePreparedAgentComposition } from '../src/admission/composition-claim.js'
+import type { AgentExecutionComposition } from '../src/admission.js'
+
+export const FIXTURE_PROVIDER = 'dsh-autopilot-fixture'
+export const FIXTURE_MODEL = 'controlled'
+export const FIXTURE_PRESET = 'controlled-autopilot'
+export const FIXTURE_AGENT_COMPOSITION: AgentExecutionComposition = {
+  presetId: FIXTURE_PRESET,
+  presetFingerprint: '35bff4faca5a08ddff07dfc89d7654dc4a15fb791ab1e4dfa31f4f9de51410bf',
+  permission: {
+    presetId: 'autopilot-unattended',
+    sandbox: 'workspace-write',
+    approval: 'never',
+  },
+  model: { provider: FIXTURE_PROVIDER, model: FIXTURE_MODEL },
+}
+
+export function fixtureCompositionClaim() {
+  return issuePreparedAgentComposition(FIXTURE_AGENT_COMPOSITION)
+}
+
+class ControlledAgentDefaultModel extends Service {
+  selection: ModelSelection = { provider: FIXTURE_PROVIDER, model: FIXTURE_MODEL }
+
+  constructor(ctx: Context) {
+    super(ctx, 'agentDefaultModel')
+  }
+
+  currentSelection(): ModelSelection {
+    return structuredClone(this.selection)
+  }
+}
+
+class ControlledAgentPresets extends Service {
+  defaultId = FIXTURE_PRESET
+  content = 'controlled composition'
+  readonly mounted: string[] = []
+
+  constructor(ctx: Context) {
+    super(ctx, 'agentPresets')
+  }
+
+  async mount(agentCtx: Context, id = this.defaultId): Promise<{ id: string }> {
+    this.mounted.push(id)
+    // The controlled adapter cannot account for descendants; the production preset owns its own capability policy.
+    agentCtx.tools.restrict({ allow: [] })
+    return { id }
+  }
+
+  standingKeyFor(id = this.defaultId): Promise<object> {
+    return Promise.resolve({ agentPreset: id })
+  }
+
+  readDocument(id: string): Promise<{ agentPreset: string; trust: 'system'; content: string }> {
+    return Promise.resolve({ agentPreset: id, trust: 'system', content: this.content })
+  }
+
+  compositionInventory(): Promise<Array<{ id: string; trust: 'system'; isDefault: boolean; rows: readonly never[] }>> {
+    return Promise.resolve(
+      [...new Set([FIXTURE_PRESET, this.defaultId])].map((id) => ({
+        id,
+        trust: 'system' as const,
+        isDefault: id === this.defaultId,
+        rows: [],
+      })),
+    )
+  }
+}
+
+class ControlledPermissionPresets extends Service {
+  defaultPreset = 'autopilot-unattended'
+  readonly applied: string[] = []
+
+  constructor(ctx: Context) {
+    super(ctx, 'permissionPresets')
+  }
+
+  resolve(name: string) {
+    if (name !== 'autopilot-unattended') throw new Error(`unknown controlled permission preset "${name}"`)
+    return { sandbox: 'workspace-write' as const, approval: 'never' as const }
+  }
+
+  set(_session: object, name: string): void {
+    this.resolve(name)
+    this.applied.push(name)
+  }
+}
 
 export class MemorySettings extends Settings {
   readonly writable = true
@@ -105,6 +195,9 @@ export class MemoryCredentials extends Credentials {
 }
 
 const agentRegistryFibers = new WeakMap<Context, Fiber>()
+const controlledModels = new WeakMap<Context, ControlledAgentDefaultModel>()
+const controlledPresets = new WeakMap<Context, ControlledAgentPresets>()
+const controlledPermissions = new WeakMap<Context, ControlledPermissionPresets>()
 
 export async function mountHostServices(
   databasePath: string,
@@ -129,6 +222,12 @@ export async function mountExecutionHostServices(
   await ctx.plugin(SessionProjectionRegistry)
   await ctx.plugin(SystemPrompt, { personaPrefix: '' })
   await ctx.plugin(ToolRuntime)
+  await ctx.plugin(ControlledAgentDefaultModel)
+  await ctx.plugin(ControlledAgentPresets)
+  await ctx.plugin(ControlledPermissionPresets)
+  controlledModels.set(ctx, ctx.get('agentDefaultModel') as unknown as ControlledAgentDefaultModel)
+  controlledPresets.set(ctx, ctx.get('agentPresets') as unknown as ControlledAgentPresets)
+  controlledPermissions.set(ctx, ctx.get('permissionPresets') as unknown as ControlledPermissionPresets)
   agentRegistryFibers.set(ctx, await ctx.plugin(AgentRegistry))
   await ctx.plugin(JsonlSessionPersistence, { root: sessionRoot, compression: 'none' })
   await ctx.plugin(AgentLoop, { agents: [] })
@@ -149,16 +248,45 @@ export async function remountExecutionAgentRegistry(ctx: Context): Promise<Fiber
   return fiber
 }
 
+export function setFixtureAgentDefaults(ctx: Context, selection: ModelSelection, presetId = FIXTURE_PRESET): void {
+  const model = controlledModels.get(ctx)
+  const presets = controlledPresets.get(ctx)
+  if (model === undefined || presets === undefined) throw new Error('controlled DSH composition is not mounted')
+  model.selection = structuredClone(selection)
+  presets.defaultId = presetId
+}
+
+export function mountedFixturePresets(ctx: Context): readonly string[] {
+  const presets = controlledPresets.get(ctx)
+  if (presets === undefined) throw new Error('controlled DSH preset service is not mounted')
+  return presets.mounted
+}
+
+export function setFixturePresetContent(ctx: Context, content: string): void {
+  const presets = controlledPresets.get(ctx)
+  if (presets === undefined) throw new Error('controlled DSH preset service is not mounted')
+  presets.content = content
+}
+
+export function appliedFixturePermissions(ctx: Context): readonly string[] {
+  const permissions = controlledPermissions.get(ctx)
+  if (permissions === undefined) throw new Error('controlled DSH permission service is not mounted')
+  return permissions.applied
+}
+
 export function fixtureExecutionSettings(
   targetRepository: string,
   managedWorktreeRoot: string,
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
   return {
-    executionMode: 'fixture',
+    executionMode: 'native',
+    runUrlTemplate: 'https://autopilot.example.invalid/runs/{runId}',
+    issueUrlTemplate: 'https://tracker.example.invalid/issues/{displayKey}',
     targetRepository,
     targetBaseBranch: 'main',
     managedWorktreeRoot,
+    codeHostProvider: 'fixture-code-host',
     deploymentTokenCap: 100,
     perRunTokenCap: 60,
     runTokenAllowance: 60,

@@ -12,13 +12,15 @@ import {
   assertStateSize,
   type EligibleIssue,
   evaluateIssue,
+  occupiesQueueCapacity,
   runId,
   runIdentity,
   runIdentityFromRun,
   validateRequest,
 } from './policy.js'
 import type { AdmissionDependencies } from './ports.js'
-import { snapshotOf, stateSchema } from './state.js'
+import { stateSchema } from './state.js'
+import { snapshotOf } from './state-domain.js'
 
 /** Read the selected provider and atomically admit every currently eligible issue. */
 export async function reconcile(
@@ -70,6 +72,7 @@ export async function reconcile(
         }
         return undefined
       })
+      let queuedCount = next.runs.filter(occupiesQueueCapacity).length
       for (const { evaluation, index } of eligible) {
         const issue = evaluation.issue
         const identity = runIdentity(providerId, issue)
@@ -77,7 +80,7 @@ export async function reconcile(
           indexedDecisions[index] = { displayKey: issue.displayKey, outcome: 'duplicate' }
           continue
         }
-        if (next.runs.length >= settings.maxQueued) {
+        if (queuedCount >= settings.maxQueued) {
           indexedDecisions[index] = { displayKey: issue.displayKey, outcome: 'deferred', reason: 'queue-capacity' }
           continue
         }
@@ -92,12 +95,14 @@ export async function reconcile(
           priorityRank: issue.priorityRank,
           readinessGeneration: issue.readiness.generation,
           brief: evaluation.brief,
+          deliveries: [],
           state: 'queued',
           queueClass: 'new',
           queuedAt: new Date().toISOString(),
           queueSequence: next.nextSequence,
         }
         next.runs.push(run)
+        queuedCount += 1
         next.nextSequence += 1
         indexedDecisions[index] = { displayKey: issue.displayKey, outcome: 'queued' }
       }

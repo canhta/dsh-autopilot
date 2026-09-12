@@ -3,8 +3,8 @@ import SystemPrompt from '@deepseek-ai/dsh-system-prompt'
 import ToolRuntime, { type ToolDefinition, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { afterEach, describe, expect, it } from 'vitest'
 import { z } from 'zod'
-import { defineMcpReadContracts, exactMcpToolName } from '../src/mcp/index.js'
-import { resolveMcpReadTools } from '../src/mcp/read-tools.js'
+import { defineMcpContracts, exactMcpToolName } from '../src/mcp/index.js'
+import { resolveMcpTools } from '../src/mcp/read-tools.js'
 
 const contexts = new Set<Context>()
 
@@ -17,7 +17,7 @@ interface ListInput {
   project: string
 }
 
-const listContracts = defineMcpReadContracts({
+const listContracts = defineMcpContracts({
   listCandidates: {
     rawName: 'list_issues',
     maxResultBytes: 512,
@@ -82,7 +82,7 @@ describe('closed MCP read tools', () => {
       received = args
       return { content: [], structuredContent: { issues: ['AUTO-1'] } }
     })
-    const resolved = resolveMcpReadTools(ctx, 'fixture', listContracts)
+    const resolved = resolveMcpTools(ctx, 'fixture', listContracts)
 
     await expect(
       resolved?.tools.call('listCandidates', { project: 'AUTO' }, new AbortController().signal),
@@ -92,14 +92,14 @@ describe('closed MCP read tools', () => {
 
   it('rejects missing or incompatible tool definitions before exposing a toolset', async () => {
     const ctx = await toolContext()
-    expect(resolveMcpReadTools(ctx, 'fixture', listContracts)).toBeUndefined()
+    expect(resolveMcpTools(ctx, 'fixture', listContracts)).toBeUndefined()
 
     registerMcpTool(ctx, async () => ({ content: [] }), {
       type: 'object',
       properties: {},
       additionalProperties: false,
     })
-    expect(resolveMcpReadTools(ctx, 'fixture', listContracts)).toBeUndefined()
+    expect(resolveMcpTools(ctx, 'fixture', listContracts)).toBeUndefined()
   })
 
   it('fences a successful result when the registered tool generation changed during the call', async () => {
@@ -112,7 +112,7 @@ describe('closed MCP read tools', () => {
           release = () => resolve({ content: [], structuredContent: { issues: ['stale-ticket'] } })
         }),
     )
-    const resolved = resolveMcpReadTools(ctx, 'fixture', listContracts)
+    const resolved = resolveMcpTools(ctx, 'fixture', listContracts)
     const read = resolved?.tools.call('listCandidates', { project: 'AUTO' }, new AbortController().signal)
 
     dispose()
@@ -127,7 +127,7 @@ describe('closed MCP read tools', () => {
       content: [{ type: 'text', text: 'live-ticket-secret'.repeat(40) }],
       structuredContent: { issues: [] },
     }))
-    const resolved = resolveMcpReadTools(ctx, 'fixture', listContracts)
+    const resolved = resolveMcpTools(ctx, 'fixture', listContracts)
 
     const error = await resolved?.tools
       .call('listCandidates', { project: 'AUTO' }, new AbortController().signal)
@@ -141,7 +141,7 @@ describe('closed MCP read tools', () => {
     registerMcpTool(ctx, async () => {
       throw new Error('live-ticket-secret')
     })
-    const resolved = resolveMcpReadTools(ctx, 'fixture', listContracts)
+    const resolved = resolveMcpTools(ctx, 'fixture', listContracts)
 
     const error = await resolved?.tools
       .call('listCandidates', { project: 'AUTO' }, new AbortController().signal)
@@ -159,7 +159,7 @@ describe('closed MCP read tools', () => {
           exec.signal.addEventListener('abort', () => reject(exec.signal.reason), { once: true })
         }),
     )
-    const resolved = resolveMcpReadTools(ctx, 'fixture', listContracts)
+    const resolved = resolveMcpTools(ctx, 'fixture', listContracts)
     const controller = new AbortController()
     const reason = new Error('caller stopped reconciliation')
     const read = resolved?.tools.call('listCandidates', { project: 'AUTO' }, controller.signal)

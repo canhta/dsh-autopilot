@@ -1,6 +1,9 @@
-import { validateFixtureExecutionSettings } from '../config.js'
+import { codeHostProviderId } from '../code-host.js'
+import { validateExecutionSettings } from '../config.js'
 import { MAX_OUTCOME_TEXT_BYTES, STATE_KEY } from './constants.js'
+import { appendLifecycleDeliveries, publicationIntent } from './deliveries.js'
 import type {
+  AgentExecutionComposition,
   ExecutionOutcome,
   GitExecutionSnapshot,
   ImplementingRun,
@@ -25,23 +28,28 @@ export class ExecutionControl {
   constructor(private readonly dependencies: AdmissionDependencies) {}
 
   /**
-   * Atomically claim the highest-priority queued run and reserve its configured fixture allowance.
-   * Returns undefined when the scheduler is not enabled or the queue is empty. Otherwise, explicit fixture execution
-   * paths and positive caps are required. The claim stores immutable run/Session/worktree identities and its reservation
+   * Atomically claim the highest-priority queued run and reserve its configured allowance.
+   * Returns undefined when the scheduler is not enabled or the queue is empty. Otherwise, explicit execution paths,
+   * positive caps, and the selected native DSH composition are required. The claim stores immutable
+   * run/Session/worktree/composition identities and its reservation
    * together; disabled execution, uncertain usage, insufficient capacity, invalid configuration, or durable-write
    * failure rejects without a partial claim. The method accepts no cancellation signal and does not start external work.
    */
-  async claimNext(): Promise<ImplementingRun | undefined> {
+  async claimNext(agent: AgentExecutionComposition, expectedRunId?: RunId): Promise<ImplementingRun | undefined> {
     const settings = this.dependencies.settings()
     let claimed: ImplementingRun | undefined
     await this.dependencies.table().update(STATE_KEY, (current) => {
       if (current.scheduler.mode !== 'enabled') return current
-      validateFixtureExecutionSettings(settings)
+      validateExecutionSettings(settings)
       if (current.budget.usageUncertain) {
         throw new Error('deployment token usage is uncertain; reconcile it before dispatch')
       }
       const queued = current.runs.filter((run): run is QueuedRun => run.state === 'queued').sort(compareQueuedRuns)[0]
       if (queued === undefined) return current
+      if (expectedRunId !== undefined && queued.runId !== expectedRunId) return current
+      const codeHost = this.dependencies.codeHost
+      if (codeHost === undefined) throw new Error('code-host binding registry is unavailable')
+      const codeHostBinding = codeHost.binding(codeHostProviderId(settings.codeHostProvider))
       if (
         current.budget.settledTokens + current.budget.reservedTokens + settings.runTokenAllowance >
         settings.deploymentTokenCap
@@ -52,10 +60,10 @@ export class ExecutionControl {
       const next = structuredClone(current)
       const index = next.runs.findIndex((run) => run.runId === queued.runId)
       if (index < 0) throw new Error('queued run disappeared during its atomic claim')
-      claimed = {
+      const claimedWithoutDeliveries: ImplementingRun = {
         ...queued,
         state: 'implementing',
-        execution: executionFor(queued, settings),
+        execution: executionFor(queued, settings, codeHostBinding, agent),
         budget: {
           capTokens: settings.perRunTokenCap,
           allowanceTokens: settings.runTokenAllowance,
@@ -63,6 +71,16 @@ export class ExecutionControl {
           settledTokens: 0,
           usageUncertain: false,
         },
+      }
+      claimed = {
+        ...claimedWithoutDeliveries,
+        deliveries: appendLifecycleDeliveries(
+          claimedWithoutDeliveries,
+          settings,
+          'started',
+          current.revision + 1,
+          claimedWithoutDeliveries.execution.startedAt,
+        ),
       }
       next.runs[index] = claimed
       next.budget.reservedTokens += settings.runTokenAllowance
@@ -136,7 +154,7 @@ export class ExecutionControl {
                 : 'reported usage exceeded the reserved allowance',
             ],
           }
-      const terminalRun: TerminalRun = {
+      const settledWithoutDeliveries: TerminalRun = {
         ...run,
         state: terminalOutcome.kind === 'verified' ? 'publishing' : terminalOutcome.kind,
         execution: structuredClone(run.execution),
@@ -149,7 +167,25 @@ export class ExecutionControl {
         },
         outcome: terminalOutcome,
         completedAt: new Date().toISOString(),
+        deliveries: run.deliveries,
       }
+      const settledWithoutPublication: TerminalRun =
+        terminalOutcome.kind === 'verified'
+          ? settledWithoutDeliveries
+          : {
+              ...settledWithoutDeliveries,
+              deliveries: appendLifecycleDeliveries(
+                settledWithoutDeliveries,
+                this.dependencies.settings(),
+                terminalOutcome.kind,
+                current.revision + 1,
+                new Date().toISOString(),
+              ),
+            }
+      const terminalRun: TerminalRun =
+        terminalOutcome.kind === 'verified'
+          ? { ...settledWithoutPublication, publication: publicationIntent(settledWithoutPublication) }
+          : settledWithoutPublication
       settled = terminalRun
       next.runs[index] = terminalRun
       if (usageKnown) {

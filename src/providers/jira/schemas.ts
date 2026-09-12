@@ -15,6 +15,13 @@ export const issueSchema = z.object({
   }),
 })
 
+export const writableIssueSchema = issueSchema.extend({
+  fields: issueSchema.shape.fields.extend({
+    status: z.object({ id: z.string().min(1).max(256) }),
+    updated: z.string().min(1).max(128),
+  }),
+})
+
 export const searchSchema = z.object({
   issues: z.array(issueSchema).max(100),
   nextPageToken: z.string().min(1).max(4096).optional(),
@@ -60,6 +67,8 @@ export const changelogPageSchema = z.object({
   values: z.array(changelogSchema).max(100),
 })
 
+export const commentWriteSchema = z.object({ id: z.string().min(1).max(256) })
+
 export const webhookBodySchema = z.object({
   timestamp: z.number().int().nonnegative(),
   webhookEvent: z.string().min(1).max(256),
@@ -80,3 +89,4 @@ export const linkedIssueSchema = z.object({
 export type JiraIssue = z.infer<typeof issueSchema>
 export type JiraComment = z.infer<typeof commentSchema>
 export type JiraChangelog = z.infer<typeof changelogSchema>
+export type JiraWritableIssue = z.infer<typeof writableIssueSchema>

@@ -4,7 +4,7 @@ Start with a [GitHub issue](https://github.com/canhta/dsh-autopilot/issues). Doc
 
 ## Set up locally
 
-Follow the [checkout instructions](../README.md#local-development). To submit changes without repository write access, fork the repository on GitHub and clone your fork instead. Create a branch for your contribution:
+Follow the [checkout instructions](../README.md#contribute). To submit changes without repository write access, fork the repository on GitHub and clone your fork instead. Create a branch for your contribution:
 
 ```sh
 git switch -c docs/clarify-onboarding
@@ -17,19 +17,19 @@ pnpm install
 pnpm run hooks:install
 ```
 
-No API credentials are needed for documentation or the local test suite. Jira behavior tests use controlled responses and a private in-memory credential boundary; they do not contact Atlassian.
+No API credentials are needed for documentation or the local test suite. Provider behavior tests use controlled MCP responses and private in-memory credential boundaries; they do not contact vendor services.
 
 ## Find the right context
 
 1. Read the issue body, comments and dependencies. [Tracker conventions](agents/issue-tracker.md) explain development labels and where work updates belong.
 2. Read [AGENTS.md](../AGENTS.md) for repository-wide contribution rules. These apply to human and agent-authored changes.
-3. Use the [documentation map](README.md) to select only the relevant specs and research. Read [engineering standards](engineering.md) when implementing or reviewing code.
+3. Use the [documentation map](README.md) to select only the relevant stable specs. Read [engineering standards](engineering.md) when implementing or reviewing code.
 
 Do not copy the entire documentation set into an issue or agent prompt. Link the authoritative sections and state the task's scope and acceptance criteria.
 
 ## Make and verify a change
 
-For documentation, update the existing owner of a fact instead of adding a second explanation. Check relative links and anchors, verify commands against the actual repository, and distinguish required behavior from implemented behavior. When changing an upstream API claim, cite the source version and its limitations in the relevant research document.
+For documentation, update the existing owner of a fact instead of adding a second explanation. Check relative links and anchors, verify commands against the actual repository, and distinguish required behavior from implemented behavior. When changing an upstream API claim, cite the exact dependency or source version in the owning specification, ADR or GitHub issue.
 
 Check whitespace errors before submitting:
 

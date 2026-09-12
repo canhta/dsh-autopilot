@@ -7,6 +7,7 @@ import type {
   PausedActiveRun,
   RunId,
 } from '../admission.js'
+import { prepareAgentComposition } from './composition.js'
 import type { DispatchResult } from './contract.js'
 import { executeClaimed, executeOwnedTurn } from './execute.js'
 import { type ActiveExecution, activeExecution, currentRun, isPausedActive } from './execution-state.js'
@@ -19,17 +20,23 @@ declare module '@deepseek-ai/cordis' {
   }
 }
 
-/** Fixture-only durable dispatcher built from the DSH Agent, Session, Workspace, Tool, LLM, and Subprocess seams. */
+/** Durable dispatcher composed from the Host's configured DSH Agent, preset, model, Session, and workspace services. */
 export class Dispatch extends Service {
   static readonly inject = [
     'admission',
     'agents',
+    'agentDefaultModel',
+    'agentPresets',
+    'permissionPresets',
     'sessions',
     'sessionPersistence',
     'workspaceRegistry',
     'tools',
     'llm',
     'subprocess',
+    'autopilotWorkflow',
+    'runtimeOwner',
+    'autopilotOperations',
   ]
 
   private readonly active = new Map<RunId, ActiveExecution>()
@@ -41,44 +48,56 @@ export class Dispatch extends Service {
   }
 
   async *[Service.init](): AsyncGenerator<() => Promise<void>, void, void> {
+    const releaseOwnerHold = this.ctx.runtimeOwner.hold()
     this.accepting = true
     yield async () => {
-      this.accepting = false
-      await Promise.all([...this.starts])
-      const owned = [...this.active.values()]
-      const pausingRunIds = await this.ctx.admission.requestServiceWithdrawalPause()
-      const settled = await Promise.allSettled([
-        ...pausingRunIds.map((runId) => this.pauseOwnedExecution(runId, 'required execution service withdrawn')),
-        ...owned.map((execution) => execution.completion),
-      ])
-      const failures = settled.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []))
-      if (failures.length > 0) throw new AggregateError(failures, 'dispatcher withdrawal did not quiesce cleanly')
+      try {
+        this.accepting = false
+        await Promise.all([...this.starts])
+        const owned = [...this.active.values()]
+        const pausingRunIds = await this.ctx.admission.requestServiceWithdrawalPause()
+        const settled = await Promise.allSettled([
+          ...pausingRunIds.map((runId) => this.pauseOwnedExecution(runId, 'required execution service withdrawn')),
+          ...owned.map((execution) => execution.completion),
+        ])
+        const failures = settled.flatMap((result) => (result.status === 'rejected' ? [result.reason] : []))
+        if (failures.length > 0) throw new AggregateError(failures, 'dispatcher withdrawal did not quiesce cleanly')
+      } finally {
+        releaseOwnerHold()
+      }
     }
   }
 
   /**
-   * Claim and execute the next queued run through the controlled fixture model, or return undefined when the queue is
-   * empty. Requires the injected DSH execution services, a registered fixture adapter, valid fixture Settings, and Git.
+   * Claim and execute the next queued run through the Host's configured DSH preset and model, or return undefined when
+   * the queue is empty. Requires the injected DSH execution services, valid execution Settings, and Git.
    * The method reserves durable budget before Git/model effects, owns the root Agent to quiescence, flushes its Session,
    * records final Git facts, and settles a structured terminal outcome. Setup/model/Git failures become a failed run
-   * when the aggregate remains writable; an aggregate write failure rejects for explicit recovery. This first-slice
-   * operation accepts no caller cancellation signal.
+   * when the aggregate remains writable; an aggregate write failure rejects for explicit recovery. The operation
+   * accepts no caller cancellation signal.
    */
   async dispatchNext(): Promise<DispatchResult | undefined> {
     this.assertAccepting()
+    return await this.ctx.autopilotWorkflow.guardDispatch(() => this.prepareNext())
+  }
+
+  private async prepareNext(): Promise<(() => Promise<DispatchResult>) | undefined> {
+    this.assertAccepting()
+    if (!this.hasRunningCapacity()) return undefined
     const snapshot = this.ctx.admission.snapshot()
     if (snapshot.scheduler.mode === 'enabled') {
       const continuation = snapshot.runs.find(
         (run): run is PausedActiveRun =>
           isPausedActive(run) && !run.pause.operatorHold && run.execution.recovery === undefined,
       )
-      if (continuation !== undefined) return await this.resumePaused(continuation.runId, 'scheduler')
+      if (continuation !== undefined) return await this.prepareResume(continuation.runId, 'scheduler')
     }
     const finishStart = this.beginStart()
     let claimed: ImplementingRun | undefined
     let active: ActiveExecution | undefined
     try {
-      claimed = await this.ctx.admission.claimNext()
+      await this.assertExecutionStartReady()
+      claimed = await this.ctx.admission.claimNext(await prepareAgentComposition(this.ctx))
       if (claimed === undefined) {
         finishStart()
         return undefined
@@ -89,12 +108,14 @@ export class Dispatch extends Service {
       finishStart()
       throw error
     }
-    try {
-      return await executeClaimed(this.ctx, claimed, active, finishStart)
-    } finally {
-      finishStart()
-      this.active.delete(claimed.runId)
-      active.complete()
+    return async () => {
+      try {
+        return await executeClaimed(this.ctx, claimed, active, finishStart)
+      } finally {
+        finishStart()
+        this.active.delete(claimed.runId)
+        active.complete()
+      }
     }
   }
 
@@ -131,22 +152,48 @@ export class Dispatch extends Service {
    * are still usable. The same run, Session, worktree, and branch are retained; no fallback identity is created. Tracker,
    * scheduler, routing, Git, and budget gates are revalidated before the resumed Agent receives continuation input.
    * Definite retained-resource failures persist an explicit recovery requirement; other preflight failures preserve the
-   * pause. The operation owns the resumed root through disposal and accepts no caller cancellation signal.
+   * pause. The operation owns the resumed root through disposal. Caller cancellation becomes a durable operator pause
+   * before the resumed root is cancelled and drained.
    */
-  async resumeRun(runId: RunId): Promise<DispatchResult> {
+  async resumeRun(runId: RunId, signal?: AbortSignal): Promise<DispatchResult> {
     this.assertAccepting()
-    return await this.resumePaused(runId, 'operator')
+    signal?.throwIfAborted()
+    const resumed = await this.ctx.autopilotWorkflow.guardDispatch(() => this.prepareResume(runId, 'operator', signal))
+    if (resumed === undefined) throw new Error(`run "${runId}" could not be prepared for execution`)
+    return resumed
   }
 
-  private async resumePaused(runId: RunId, authorization: ActiveResumeAuthorization): Promise<DispatchResult> {
+  private async prepareResume(
+    runId: RunId,
+    authorization: ActiveResumeAuthorization,
+    signal?: AbortSignal,
+  ): Promise<() => Promise<DispatchResult>> {
+    if (!this.hasRunningCapacity()) throw new Error('maximum concurrent runs are already active')
     const finishStart = this.beginStart()
     let prepared: PreparedResume
     try {
+      await this.assertExecutionStartReady()
       prepared = await preparePausedResume(this.ctx, this.active, runId, authorization)
     } finally {
       finishStart()
     }
+    return () => this.executePreparedResume(prepared, signal)
+  }
+
+  private async executePreparedResume(prepared: PreparedResume, signal?: AbortSignal): Promise<DispatchResult> {
     const { run, active, handle, usage, report, baseHead, workspace } = prepared
+    let cancellation: Promise<void> | undefined
+    const requestCancellation = (): void => {
+      if (cancellation !== undefined) return
+      active.pauseRequested = true
+      handle.agent.cancel(
+        { kind: 'hook', reason: 'operator command owner withdrew while resuming this run' },
+        { keepInbox: true },
+      )
+      cancellation = this.ctx.admission.requestRunPause(run.runId).then(() => undefined)
+    }
+    signal?.addEventListener('abort', requestCancellation)
+    if (signal?.aborted === true) requestCancellation()
     try {
       return await executeOwnedTurn(
         this.ctx,
@@ -158,11 +205,14 @@ export class Dispatch extends Service {
         baseHead,
         continuationPrompt(run),
         'pause requested before continuation',
-        'Fixture continuation failed.',
+        'Agent continuation failed.',
         workspace,
+        () => cancellation ?? Promise.resolve(),
       )
     } finally {
-      this.active.delete(runId)
+      signal?.removeEventListener('abort', requestCancellation)
+      await cancellation
+      this.active.delete(run.runId)
       active.complete()
     }
   }
@@ -187,6 +237,15 @@ export class Dispatch extends Service {
 
   private assertAccepting(): void {
     if (!this.accepting) throw new Error('dispatcher is unavailable while its required services are changing')
+  }
+
+  private hasRunningCapacity(): boolean {
+    return this.active.size < this.ctx.autopilotConfig.get().maxRunning
+  }
+
+  private async assertExecutionStartReady(): Promise<void> {
+    await this.ctx.runtimeOwner.ensureOwned()
+    await this.ctx.autopilotOperations.assertDispatchReady()
   }
 
   private beginStart(): () => void {

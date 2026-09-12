@@ -1,10 +1,10 @@
 export {
-  defineMcpReadContracts,
+  defineMcpContracts,
   exactMcpToolName,
+  type McpContract,
   type McpContractInput,
+  type McpContractMap,
   type McpContractOutput,
-  type McpReadContract,
-  type McpReadContractMap,
   type McpResult,
 } from './contracts.js'
 export { createMcpTraversalCursorCodec, type McpTraversalCursor } from './cursor.js'
@@ -17,4 +17,11 @@ export {
 } from './definition.js'
 export { decodeMcpJson } from './json.js'
 export { type McpTrackerMountOptions, mountMcpTracker } from './mount.js'
-export type { McpReadTools } from './read-tools.js'
+export {
+  type McpErrorFactory,
+  McpOperationError,
+  type McpOperationErrorCode,
+  type McpTools,
+  type ResolvedMcpTools,
+  resolveMcpTools,
+} from './read-tools.js'

@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, readdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { Admission } from '../src/admission.js'
 import { AutopilotConfig } from '../src/config.js'
-import { Dispatch, FIXTURE_PROVIDER } from '../src/dispatch.js'
+import { AutopilotOperations, PullRequestDispositionRegistry, RuntimeOwner } from '../src/operations.js'
 import { createFixtureTrackerProvider } from '../src/testing.js'
 import { readinessGeneration, Tracker, trackerBindingId, trackerIssueId } from '../src/tracker.js'
 import {
@@ -13,10 +13,20 @@ import {
   ControlledAdapter,
   candidate,
   contexts,
+  mountExecutionLifecycle,
   pauseAtSettlement,
   temporaryDirectories,
 } from './dispatch-fixtures.js'
-import { disposeContext, fixtureExecutionSettings, mountExecutionHostServices } from './dsh-fixtures.js'
+import {
+  Deferred,
+  disposeContext,
+  FIXTURE_PROVIDER,
+  fixtureExecutionSettings,
+  mountExecutionHostServices,
+  mountedFixturePresets,
+  setFixtureAgentDefaults,
+  setFixturePresetContent,
+} from './dsh-fixtures.js'
 
 describe('durable fixture dispatch: recovery and resume', () => {
   it('continues a paused logical run through the retained DSH Session and worktree', async () => {
@@ -59,6 +69,8 @@ describe('durable fixture dispatch: recovery and resume', () => {
       encoding: 'utf8',
     })
 
+    setFixtureAgentDefaults(ctx, { provider: 'changed-after-claim', model: 'changed-model' }, 'changed-preset')
+
     await ctx.admission.requestRunPause(paused.runId)
     await ctx.admission.setSchedulerMode('enabled')
     const completed = await ctx.dispatch.resumeRun(paused.runId)
@@ -86,54 +98,78 @@ describe('durable fixture dispatch: recovery and resume', () => {
     ).toBe(branchesBefore)
     expect(adapter.requests).toHaveLength(4)
     expect(adapter.requests.every((request) => request.sessionId === paused.execution.sessionId)).toBe(true)
+    expect(adapter.requests.every((request) => request.provider === paused.execution.agent?.model.provider)).toBe(true)
+    expect(adapter.requests.every((request) => request.model === paused.execution.agent?.model.model)).toBe(true)
+    expect(mountedFixturePresets(ctx)).toEqual([paused.execution.agent?.presetId, paused.execution.agent?.presetId])
   })
 
-  it('leaves an allocated pause unchanged when its retained Session is unavailable', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-missing-session-'))
+  it('keeps an operator resume paused while operations recovery is unresolved', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-operator-resume-recovery-'))
     temporaryDirectories.push(root)
-    const adapter = new ControlledAdapter()
+    const adapter = new ControlledAdapter('verified', 'known', 'valid', undefined, true)
     const ctx = await bootFixture(root, adapter)
     const paused = await pauseAtSettlement(ctx)
     await ctx.admission.setSchedulerMode('enabled')
-    const before = ctx.admission.snapshot()
-    ctx.sessionPersistence.stat = () => Promise.resolve(undefined)
+    ctx.autopilotOperations.registerRecoveryParticipant('operator-resume-probe', {
+      reconcile: () => Promise.resolve({ pending: 1 }),
+    })
 
-    await expect(ctx.dispatch.resumeRun(paused.runId)).rejects.toThrow(/Session.*unavailable.*recovery/i)
+    await expect(ctx.dispatch.resumeRun(paused.runId)).rejects.toThrow(/recovery.*before.*execution/i)
 
-    expect(ctx.admission.snapshot()).toMatchObject({
-      revision: before.revision + 1,
-      runs: [{ runId: paused.runId, state: 'paused', execution: { recovery: { reason: 'session-unavailable' } } }],
+    expect(ctx.admission.snapshot().runs.find((run) => run.runId === paused.runId)).toMatchObject({
+      state: 'paused',
+      execution: { attempt: 1 },
     })
     expect(adapter.requests).toHaveLength(2)
-    expect(ctx.agents.roots()).toEqual([])
   })
 
-  it('leaves an allocated pause unchanged when its retained Session belongs to another working directory', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-session-cwd-'))
+  it('requires explicit recovery when the retained Agent preset content changed', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-preset-change-'))
     temporaryDirectories.push(root)
-    const adapter = new ControlledAdapter()
+    const ctx = await bootFixture(root, new ControlledAdapter('verified', 'known', 'valid', undefined, true))
+    const paused = await pauseAtSettlement(ctx)
+    await ctx.admission.setSchedulerMode('enabled')
+    setFixturePresetContent(ctx, 'changed controlled composition')
+
+    await expect(ctx.dispatch.resumeRun(paused.runId)).rejects.toThrow(/composition changed or is unavailable/i)
+
+    expect(ctx.admission.snapshot().runs.find((run) => run.runId === paused.runId)).toMatchObject({
+      state: 'paused',
+      execution: { recovery: { reason: 'composition-unavailable' } },
+    })
+  })
+
+  it('turns cancellation of a resumed root into a durable operator pause before draining it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-resume-cancel-'))
+    temporaryDirectories.push(root)
+    const adapter = new ControlledAdapter('verified', 'known', 'valid', undefined, true)
     const ctx = await bootFixture(root, adapter)
     const paused = await pauseAtSettlement(ctx)
     await ctx.admission.setSchedulerMode('enabled')
-    const before = ctx.admission.snapshot()
-    const stat = ctx.sessionPersistence.stat.bind(ctx.sessionPersistence)
-    ctx.sessionPersistence.stat = async (sessionId, options) => {
-      const persisted = await stat(sessionId, options)
-      if (persisted === undefined) return undefined
-      return { ...persisted, header: { ...persisted.header, cwd: join(root, 'different-worktree') } }
+    const resumedRequestStarted = new Deferred<void>()
+    const releaseRequest = new Deferred<void>()
+    adapter.beforeResponse = async (response) => {
+      if (response !== 3) return
+      resumedRequestStarted.resolve()
+      await releaseRequest.promise
     }
+    const controller = new AbortController()
 
-    await expect(ctx.dispatch.resumeRun(paused.runId)).rejects.toThrow(/Session.*incompatible.*recovery/i)
+    const resuming = ctx.dispatch.resumeRun(paused.runId, controller.signal)
+    await resumedRequestStarted.promise
+    controller.abort(new Error('command owner withdrawn'))
+    await expect.poll(() => ctx.admission.snapshot().runs[0]?.state).toBe('pausing')
+    releaseRequest.resolve()
 
-    expect(ctx.admission.snapshot()).toMatchObject({
-      revision: before.revision + 1,
-      runs: [{ runId: paused.runId, state: 'paused', execution: { recovery: { reason: 'session-unavailable' } } }],
+    await expect(resuming).resolves.toMatchObject({
+      runId: paused.runId,
+      state: 'paused',
+      pause: { reason: 'operator', operatorHold: true, lastCompletedPhase: 'agent-quiescent' },
     })
-    expect(adapter.requests).toHaveLength(2)
     expect(ctx.agents.roots()).toEqual([])
   })
 
-  it('skips a recovery-blocked active pause when scheduler dispatch can start new work', async () => {
+  it('fences new dispatch while an allocated run still requires restart recovery', async () => {
     const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-recovery-skip-'))
     temporaryDirectories.push(root)
     const adapter = new ControlledAdapter('verified', 'known', 'valid', undefined, true)
@@ -158,97 +194,15 @@ describe('durable fixture dispatch: recovery and resume', () => {
       sessionId === paused.execution.sessionId ? Promise.resolve(undefined) : stat(sessionId, options)
     await expect(ctx.dispatch.resumeRun(paused.runId)).rejects.toThrow(/Session.*recovery/i)
 
-    const completed = await ctx.dispatch.dispatchNext()
+    await expect(ctx.dispatch.dispatchNext()).rejects.toThrow(/recovery.*before execution/i)
 
-    expect(completed).toMatchObject({ displayKey: 'FIX-RECOVERY-NEW', state: 'publishing' })
+    expect(ctx.admission.snapshot().runs.find((run) => run.displayKey === 'FIX-RECOVERY-NEW')).toMatchObject({
+      state: 'queued',
+    })
     expect(ctx.admission.snapshot().runs.find((run) => run.runId === paused.runId)).toMatchObject({
       state: 'paused',
       execution: { recovery: { reason: 'session-unavailable' } },
     })
-  })
-
-  it('leaves an allocated pause unchanged when its durable workspace ownership is unavailable', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-workspace-owner-'))
-    temporaryDirectories.push(root)
-    const adapter = new ControlledAdapter()
-    const ctx = await bootFixture(root, adapter)
-    const paused = await pauseAtSettlement(ctx)
-    await ctx.admission.setSchedulerMode('enabled')
-    const before = ctx.admission.snapshot()
-    ctx.workspaceRegistry.resolveByPath = () => Promise.resolve(undefined)
-
-    await expect(ctx.dispatch.resumeRun(paused.runId)).rejects.toThrow(/workspace ownership.*recovery/i)
-
-    expect(ctx.admission.snapshot()).toMatchObject({
-      revision: before.revision + 1,
-      runs: [{ runId: paused.runId, state: 'paused', execution: { recovery: { reason: 'workspace-unavailable' } } }],
-    })
-    expect(adapter.requests).toHaveLength(2)
-    expect(ctx.agents.roots()).toEqual([])
-  })
-
-  it('leaves an allocated pause unchanged when its retained Git state changed', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-changed-git-'))
-    temporaryDirectories.push(root)
-    const adapter = new ControlledAdapter()
-    const ctx = await bootFixture(root, adapter)
-    const paused = await pauseAtSettlement(ctx)
-    await writeFile(join(paused.execution.worktreePath, 'CHANGED.md'), 'changed after checkpoint\n')
-    await ctx.admission.setSchedulerMode('enabled')
-    const before = ctx.admission.snapshot()
-
-    await expect(ctx.dispatch.resumeRun(paused.runId)).rejects.toThrow(/Git state changed.*recovery/i)
-
-    expect(ctx.admission.snapshot()).toMatchObject({
-      revision: before.revision + 1,
-      runs: [{ runId: paused.runId, state: 'paused', execution: { recovery: { reason: 'worktree-mismatch' } } }],
-    })
-    expect(adapter.requests).toHaveLength(2)
-    expect(ctx.agents.roots()).toEqual([])
-  })
-
-  it('rejects a replacement repository even when its branch, head, and status match the checkpoint', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-replaced-worktree-'))
-    temporaryDirectories.push(root)
-    const adapter = new ControlledAdapter()
-    const ctx = await bootFixture(root, adapter)
-    const paused = await pauseAtSettlement(ctx)
-    execFileSync('git', ['worktree', 'remove', '--force', paused.execution.worktreePath], {
-      cwd: paused.execution.targetRepository,
-    })
-    execFileSync(
-      'git',
-      ['clone', '--branch', paused.execution.branch, paused.execution.targetRepository, paused.execution.worktreePath],
-      { cwd: root },
-    )
-    await ctx.admission.setSchedulerMode('enabled')
-    const before = ctx.admission.snapshot()
-
-    await expect(ctx.dispatch.resumeRun(paused.runId)).rejects.toThrow(/worktree.*incompatible.*recovery/i)
-
-    expect(ctx.admission.snapshot()).toMatchObject({
-      revision: before.revision + 1,
-      runs: [{ runId: paused.runId, state: 'paused', execution: { recovery: { reason: 'worktree-mismatch' } } }],
-    })
-    expect(adapter.requests).toHaveLength(2)
-    expect(ctx.agents.roots()).toEqual([])
-  })
-
-  it('disposes a resumed root when workspace attachment fails', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-dispatch-resume-attach-'))
-    temporaryDirectories.push(root)
-    const adapter = new ControlledAdapter()
-    const ctx = await bootFixture(root, adapter)
-    const paused = await pauseAtSettlement(ctx)
-    const workspace = await ctx.workspaceRegistry.resolveByPath(paused.execution.worktreePath)
-    if (workspace === undefined) throw new Error('expected retained workspace')
-    workspace.attachSession = () => Promise.reject(new Error('controlled workspace attachment failure'))
-    await ctx.admission.setSchedulerMode('enabled')
-
-    const failed = await ctx.dispatch.resumeRun(paused.runId)
-
-    expect(failed).toMatchObject({ state: 'failed', outcome: { kind: 'failed' } })
-    expect(ctx.agents.roots()).toEqual([])
   })
 
   it('automatically resumes an eligible scheduler pause before claiming new work', async () => {
@@ -298,8 +252,11 @@ describe('durable fixture dispatch: recovery and resume', () => {
     await resumed.plugin(Tracker)
     resumed.tracker.register(createFixtureTrackerProvider({ issues: [candidate()] }))
     await resumed.plugin(AutopilotConfig)
+    await resumed.plugin(RuntimeOwner, { authoritativeStorePath: join(root, 'state.sqlite') })
     await resumed.plugin(Admission)
-    await resumed.plugin(Dispatch)
+    await resumed.plugin(PullRequestDispositionRegistry)
+    await resumed.plugin(AutopilotOperations)
+    await mountExecutionLifecycle(resumed)
     const resumeAgent = resumed.agents.resume.bind(resumed.agents)
     let resumes = 0
     resumed.agents.resume = async (options) => {

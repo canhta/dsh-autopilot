@@ -1,0 +1,26 @@
+[Unit]
+Description=DSH Autopilot Host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dsh-autopilot
+Group=dsh-autopilot
+WorkingDirectory=/var/lib/dsh-autopilot/package
+Environment=DSH_HOME=/var/lib/dsh
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/env dsh --profile autopilot --host 127.0.0.1 --port 14500 --no-open
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=5min
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/dsh /var/lib/dsh-autopilot /srv/autopilot-target
+
+[Install]
+WantedBy=multi-user.target

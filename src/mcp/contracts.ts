@@ -10,8 +10,8 @@ export interface McpResult {
   readonly structuredContent?: unknown
 }
 
-/** One closed, read-only semantic operation backed by a version-pinned MCP tool contract. */
-export interface McpReadContract<Input, Output> {
+/** One closed semantic operation backed by a version-pinned MCP tool contract. */
+export interface McpContract<Input, Output> {
   readonly rawName: string
   readonly maxResultBytes: number
   acceptsDefinition(definition: ToolDefinition): boolean
@@ -19,23 +19,23 @@ export interface McpReadContract<Input, Output> {
   decode(result: McpResult): Output
 }
 
-export type McpReadContractMap = Readonly<Record<string, McpReadContract<unknown, unknown>>>
+export type McpContractMap = Readonly<Record<string, McpContract<unknown, unknown>>>
 
-export type McpContractInput<Contract> = Contract extends McpReadContract<infer Input, unknown> ? Input : never
-export type McpContractOutput<Contract> = Contract extends McpReadContract<unknown, infer Output> ? Output : never
+export type McpContractInput<Contract> = Contract extends McpContract<infer Input, unknown> ? Input : never
+export type McpContractOutput<Contract> = Contract extends McpContract<unknown, infer Output> ? Output : never
 
 /** Preserve a provider's closed semantic-operation keys while validating its static contract declarations. */
-export function defineMcpReadContracts<const Contracts extends McpReadContractMap>(contracts: Contracts): Contracts {
+export function defineMcpContracts<const Contracts extends McpContractMap>(contracts: Contracts): Contracts {
   if (Object.keys(contracts).length === 0) throw new TypeError('MCP read contracts must not be empty')
   for (const [operation, contract] of Object.entries(contracts)) {
     if (!/^[A-Za-z][A-Za-z0-9]*$/.test(operation)) {
       throw new TypeError('MCP semantic operation names must be alphanumeric identifiers')
     }
     if (!RAW_TOOL_NAME.test(contract.rawName)) {
-      throw new TypeError(`MCP read operation "${operation}" has an invalid raw tool name`)
+      throw new TypeError(`MCP operation "${operation}" has an invalid raw tool name`)
     }
     if (!Number.isSafeInteger(contract.maxResultBytes) || contract.maxResultBytes < 1) {
-      throw new TypeError(`MCP read operation "${operation}" must declare a positive result-byte bound`)
+      throw new TypeError(`MCP operation "${operation}" must declare a positive result-byte bound`)
     }
   }
   return contracts

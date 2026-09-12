@@ -12,14 +12,14 @@ import {
   trackContext,
   validBrief,
 } from './admission-fixtures.js'
-import { Deferred, fixtureExecutionSettings, mountHostServices } from './dsh-fixtures.js'
+import { Deferred, fixtureCompositionClaim, fixtureExecutionSettings, mountHostServices } from './dsh-fixtures.js'
 
 describe('admission reconciliation and policy', () => {
-  it('keeps dispatch disabled unless the fixture mode and positive limits are explicit', async () => {
+  it('keeps dispatch disabled unless native execution and positive limits are explicit', async () => {
     const { ctx } = await boot(await databasePath(), [candidate()])
     await ctx.admission.reconcile({ source: 'manual' })
 
-    await expect(ctx.admission.claimNext()).rejects.toThrow(/dispatch is disabled/)
+    await expect(ctx.admission.claimNext(fixtureCompositionClaim())).rejects.toThrow(/dispatch is disabled/)
 
     expect(ctx.admission.snapshot()).toMatchObject({
       runs: [{ state: 'queued' }],
@@ -39,7 +39,10 @@ describe('admission reconciliation and policy', () => {
     )
     await ctx.admission.reconcile({ source: 'manual' })
 
-    const claims = await Promise.allSettled([ctx.admission.claimNext(), ctx.admission.claimNext()])
+    const claims = await Promise.allSettled([
+      ctx.admission.claimNext(fixtureCompositionClaim()),
+      ctx.admission.claimNext(fixtureCompositionClaim()),
+    ])
 
     expect(claims.filter((claim) => claim.status === 'fulfilled')).toHaveLength(1)
     expect(claims.filter((claim) => claim.status === 'rejected')).toMatchObject([
@@ -228,6 +231,36 @@ describe('admission reconciliation and policy', () => {
     expect(result.decisions).toEqual([
       { displayKey: 'FIX-LOW', outcome: 'deferred', reason: 'queue-capacity' },
       { displayKey: 'FIX-HIGH', outcome: 'queued' },
+    ])
+  })
+
+  it('does not let retained terminal history consume queue capacity', async () => {
+    const first = candidate({ issueId: trackerIssueId('first'), displayKey: 'FIX-1', priorityRank: 1 })
+    const second = candidate({ issueId: trackerIssueId('second'), displayKey: 'FIX-2', priorityRank: 2 })
+    const { ctx } = await boot(
+      await databasePath(),
+      [first, second],
+      1,
+      fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees'),
+    )
+    await ctx.admission.reconcile({ source: 'manual' })
+    const claimed = await ctx.admission.claimNext(fixtureCompositionClaim())
+    if (claimed === undefined) throw new Error('expected the first run to be claimed')
+    await ctx.admission.settle(
+      claimed.runId,
+      { kind: 'failed', summary: 'Fixture terminal history.', evidence: ['fixture'] },
+      { kind: 'known', tokens: 1 },
+    )
+
+    const result = await ctx.admission.reconcile({ source: 'manual' })
+
+    expect(result.decisions).toEqual([
+      { displayKey: 'FIX-1', outcome: 'duplicate' },
+      { displayKey: 'FIX-2', outcome: 'queued' },
+    ])
+    expect(ctx.admission.snapshot().runs.map((run) => [run.displayKey, run.state])).toEqual([
+      ['FIX-2', 'queued'],
+      ['FIX-1', 'failed'],
     ])
   })
 

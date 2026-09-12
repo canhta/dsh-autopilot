@@ -6,8 +6,14 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionHandleClosedError } from '@deepseek-ai/dsh-session-persistence'
 import type { Workspace } from '@deepseek-ai/dsh-workspace'
 import type { GitExecutionSnapshot, ImplementingRun, PausingRun } from '../admission.js'
+import {
+  applyAgentPermission,
+  assertAgentCompositionAvailable,
+  modelSelection,
+  mountAgentComposition,
+  requiredAgentComposition,
+} from './composition.js'
 import type { DispatchResult } from './contract.js'
-import { FIXTURE_MODEL, FIXTURE_PROVIDER } from './contract.js'
 import type { ActiveExecution } from './execution-state.js'
 import { currentRun } from './execution-state.js'
 import { gitCommand, inspectGit } from './git.js'
@@ -19,7 +25,7 @@ import {
   truncateUtf8,
   validatedOutcome,
 } from './report.js'
-import { configureFixtureTools, registerUsageRecorder, type UsageRecorder, usageSettlement } from './usage.js'
+import { registerUsageRecorder, type UsageRecorder, usageSettlement } from './usage.js'
 
 export async function executeClaimed(
   ctx: Context,
@@ -35,6 +41,8 @@ export async function executeClaimed(
   let handle: AgentHandle
   let workspace: Workspace
   try {
+    const composition = requiredAgentComposition(run.execution)
+    await assertAgentCompositionAvailable(ctx, composition)
     await mkdir(dirname(run.execution.worktreePath), { recursive: true })
     baseHead = (
       await gitCommand(ctx.subprocess, run.execution.targetRepository, ['rev-parse', run.execution.baseBranch])
@@ -51,24 +59,30 @@ export async function executeClaimed(
     run = await ctx.admission.recordWorktree(run.runId, git)
 
     workspace = await ctx.workspaceRegistry.create(run.execution.worktreePath, run.displayKey)
+    const selected = modelSelection(composition)
     handle = await ctx.agents.create({
       sessionId: run.execution.sessionId,
-      meta: { cwd: run.execution.worktreePath },
+      meta: { cwd: run.execution.worktreePath, agentPreset: composition.presetId },
       agentOptions: {
-        provider: FIXTURE_PROVIDER,
-        model: FIXTURE_MODEL,
+        ...selected,
         maxTokens: run.budget.capTokens,
       },
-      setup: (agentCtx) => {
-        configureFixtureTools(agentCtx)
-        registerUsageRecorder(agentCtx, run, usage)
+      setup: async (agentCtx) => {
+        await mountAgentComposition(ctx, agentCtx, composition)
+        registerUsageRecorder(agentCtx, run, composition, usage)
         agentCtx.tools.register(createReportTool(report))
       },
     })
+    try {
+      applyAgentPermission(ctx, handle.agent.session, composition)
+    } catch (error) {
+      await handle.dispose()
+      throw error
+    }
     active.handle = handle
     finishStart()
   } catch (error) {
-    return await settleExecutionFailure(ctx, run, git, usage, error, 'Fixture dispatch failed.')
+    return await settleExecutionFailure(ctx, run, git, usage, error, 'Agent execution failed.')
   }
 
   return await executeOwnedTurn(
@@ -81,7 +95,7 @@ export async function executeClaimed(
     baseHead,
     executionPrompt(run),
     'pause requested before Agent start',
-    'Fixture dispatch failed.',
+    'Agent execution failed.',
     workspace,
   )
 }
@@ -98,6 +112,7 @@ export async function executeOwnedTurn(
   cancellationReason: string,
   failureSummary: string,
   existingWorkspace?: Workspace,
+  beforeCheckpoint?: () => Promise<void>,
 ): Promise<DispatchResult> {
   let git = run.execution.git
   let rootQuiescent = false
@@ -122,6 +137,7 @@ export async function executeOwnedTurn(
         )
       }
       await handle.agent.whenIdle()
+      await beforeCheckpoint?.()
       rootQuiescent = true
       if (!(await ctx.sessions.flush(handle.agent.session))) {
         throw new Error(`session "${run.execution.sessionId}" has no persistence binding`)
@@ -133,9 +149,12 @@ export async function executeOwnedTurn(
     }
 
     git = await inspectGit(ctx.subprocess, run.execution.worktreePath, baseHead)
+    await beforeCheckpoint?.()
     finalGitObserved = true
     const recorded = await ctx.admission.recordWorktree(run.runId, git)
-    if (recorded.state === 'pausing') {
+    await beforeCheckpoint?.()
+    const current = currentRun(ctx.admission.snapshot(), run.runId)
+    if (recorded.state === 'pausing' || current.state === 'pausing') {
       return await ctx.admission.checkpointPaused(run.runId, git, usageSettlement(usage))
     }
     return await ctx.admission.settle(run.runId, validatedOutcome(report, git), usageSettlement(usage))

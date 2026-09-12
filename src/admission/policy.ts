@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import { SessionId as sessionId } from '@deepseek-ai/dsh-session'
 import { z } from 'zod'
+import type { CodeHostBinding } from '../code-host.js'
 import type { AutopilotSettings } from '../config.js'
 import type { TrackerComment, TrackerIssueSnapshot, TrackerProviderId } from '../tracker.js'
 import { ID_PATTERN, MAX_OUTCOME_TEXT_BYTES, MAX_STATE_BYTES, MAX_SUMMARY_BYTES, textEncoder } from './constants.js'
@@ -11,6 +12,7 @@ import type {
   ActiveResumeAuthorization,
   AdmissionRejectionReason,
   AgentBriefSnapshot,
+  AgentExecutionComposition,
   AutopilotRun,
   GitExecutionSnapshot,
   ImplementingRun,
@@ -65,6 +67,11 @@ export function usageUncertaintyReason(run: ImplementingRun | PausingRun, usage:
   return usage.kind === 'uncertain'
     ? truncateUtf8(usage.reason, MAX_OUTCOME_TEXT_BYTES) || 'provider did not supply a usage uncertainty reason'
     : `reported usage exceeded the reserved allowance of ${String(run.budget.reservedTokens)} tokens`
+}
+
+export function boundedExternalRetry(retryAfterMs: number | undefined, attempts: number): number {
+  const proposed = retryAfterMs ?? 1_000 * 2 ** Math.min(attempts, 8)
+  return Math.max(1_000, Math.min(proposed, 60 * 60 * 1_000))
 }
 
 export function validateActiveResumeFacts(
@@ -218,6 +225,10 @@ export function compareQueuedRuns(left: QueuedRun, right: QueuedRun): number {
   return queueClassRank(left.queueClass) - queueClassRank(right.queueClass) || compareRunFacts(left, right)
 }
 
+export function occupiesQueueCapacity(run: AutopilotRun): boolean {
+  return run.state === 'queued' || (run.state === 'paused' && run.pause.kind === 'queued')
+}
+
 export function compareSnapshotRuns(left: AutopilotRun, right: AutopilotRun): number {
   return snapshotGroup(left) - snapshotGroup(right) || compareRunFacts(left, right)
 }
@@ -236,7 +247,12 @@ function compareRunFacts(left: AutopilotRun, right: AutopilotRun): number {
   )
 }
 
-export function executionFor(run: QueuedRun, settings: AutopilotSettings): RunExecutionSnapshot {
+export function executionFor(
+  run: QueuedRun,
+  settings: AutopilotSettings,
+  codeHost: CodeHostBinding,
+  agent: AgentExecutionComposition,
+): RunExecutionSnapshot {
   const stableId = run.runId.slice('run_'.length)
   return {
     attempt: 1,
@@ -245,6 +261,14 @@ export function executionFor(run: QueuedRun, settings: AutopilotSettings): RunEx
     baseBranch: settings.targetBaseBranch,
     worktreePath: join(settings.managedWorktreeRoot, run.runId),
     branch: `dsh-autopilot/${stableId}`,
+    agent: structuredClone(agent),
+    codeHost: {
+      providerId: codeHost.providerId,
+      bindingId: codeHost.bindingId,
+      repositoryId: codeHost.repositoryId,
+      repository: codeHost.repository,
+      allowWorkflowChanges: settings.allowWorkflowChanges,
+    },
     startedAt: new Date().toISOString(),
   }
 }

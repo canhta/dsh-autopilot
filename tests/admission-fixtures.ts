@@ -6,6 +6,7 @@ import { DatabaseSync } from 'node:sqlite'
 import type { Context } from '@deepseek-ai/cordis'
 import { afterEach } from 'vitest'
 import { Admission } from '../src/admission.js'
+import { CodeHost, codeHostBindingId, codeHostProviderId, codeHostRepositoryId } from '../src/code-host.js'
 import { AutopilotConfig } from '../src/config.js'
 import { createFixtureTrackerProvider } from '../src/testing.js'
 import {
@@ -106,7 +107,7 @@ export async function databasePath(): Promise<string> {
   return join(directory, 'state.sqlite')
 }
 
-export function useDatabase<T>(path: string, operation: (database: DatabaseSync) => T): T {
+export function withDatabase<T>(path: string, operation: (database: DatabaseSync) => T): T {
   const database = new DatabaseSync(path)
   try {
     return operation(database)
@@ -116,7 +117,7 @@ export function useDatabase<T>(path: string, operation: (database: DatabaseSync)
 }
 
 export function rejectAdmissionUpdates(path: string): void {
-  useDatabase(path, (database) => {
+  withDatabase(path, (database) => {
     database.exec(`CREATE TRIGGER reject_admission_update
       BEFORE UPDATE ON u_autopilot_admission_state
       BEGIN
@@ -130,6 +131,7 @@ interface StoredRun {
   providerId: string
   bindingId: string
   issueId: string
+  displayKey: string
   readinessGeneration: string
   summary: string
   queueSequence: number
@@ -144,7 +146,7 @@ export interface StoredAdmissionState {
 }
 
 export function rewriteStoredState(path: string, mutate: (state: StoredAdmissionState) => void): void {
-  useDatabase(path, (database) => {
+  withDatabase(path, (database) => {
     const stored = database.prepare('SELECT value FROM u_autopilot_admission_state WHERE key = ?').get('primary') as {
       value: string
     }
@@ -172,6 +174,7 @@ export async function boot(
     await mountHostServices(path, {
       'dsh-autopilot': {
         trackerProvider: 'fixture',
+        codeHostProvider: 'fixture-code-host',
         maxQueued,
         ...admissionSettings,
       },
@@ -179,6 +182,13 @@ export async function boot(
   )
   await ctx.plugin(Tracker)
   const disposeProvider = ctx.tracker.register(fixtureProvider(issues, onRead))
+  await ctx.plugin(CodeHost)
+  ctx.codeHost.registerBinding({
+    providerId: codeHostProviderId('fixture-code-host'),
+    bindingId: codeHostBindingId('fixture:code-host'),
+    repositoryId: codeHostRepositoryId('fixture:repository'),
+    repository: 'fixture/repository',
+  })
   await ctx.plugin(AutopilotConfig)
   await ctx.plugin(Admission)
   return { ctx, disposeProvider }

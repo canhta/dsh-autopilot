@@ -10,11 +10,17 @@ import type {
   PausedActiveRun,
   RunId,
 } from '../admission.js'
-import { FIXTURE_MODEL, FIXTURE_PROVIDER } from './contract.js'
+import {
+  AgentCompositionUnavailableError,
+  applyAgentPermission,
+  assertAgentCompositionAvailable,
+  modelSelection,
+  mountAgentComposition,
+} from './composition.js'
 import { type ActiveExecution, activeExecution, currentRun, isPausedActive, sameGit } from './execution-state.js'
 import { inspectRetainedWorktree } from './git.js'
 import { createReportTool, errorMessage, type ReportRecorder } from './report.js'
-import { configureFixtureTools, registerUsageRecorder, type UsageRecorder } from './usage.js'
+import { registerUsageRecorder, type UsageRecorder } from './usage.js'
 
 export interface PreparedResume {
   readonly run: ImplementingRun
@@ -45,6 +51,26 @@ export async function preparePausedResume(
   const remainingTokens = paused.budget.capTokens - paused.budget.settledTokens
   if (remainingTokens <= 0) throw new Error(`run "${runId}" has no retained token capacity`)
   const continuationAllowance = Math.min(paused.budget.allowanceTokens, remainingTokens)
+  const composition = paused.execution.agent
+  if (composition === undefined) {
+    return await rejectResumeForRecovery(
+      ctx,
+      paused,
+      'composition-unavailable',
+      `run "${runId}" predates native DSH composition and cannot be resumed safely`,
+    )
+  }
+  try {
+    await assertAgentCompositionAvailable(ctx, composition)
+  } catch (error) {
+    if (!(error instanceof AgentCompositionUnavailableError)) throw error
+    return await rejectResumeForRecovery(
+      ctx,
+      paused,
+      'composition-unavailable',
+      `run "${runId}" retained DSH composition changed or is unavailable and requires explicit recovery: ${errorMessage(error.cause ?? error)}`,
+    )
+  }
   const persisted: SessionPersistenceSnapshot | undefined = await ctx.sessionPersistence.stat(
     paused.execution.sessionId,
   )
@@ -88,22 +114,23 @@ export async function preparePausedResume(
   }
   const usage: UsageRecorder = { usage: [], requests: 0 }
   const report: ReportRecorder = {}
+  const selected = modelSelection(composition)
   const handle = await ctx.agents.resume({
     resumeSessionId: paused.execution.sessionId,
     agentOptions: {
-      provider: FIXTURE_PROVIDER,
-      model: FIXTURE_MODEL,
+      ...selected,
       maxTokens: continuationAllowance,
     },
-    setup: (agentCtx) => {
-      configureFixtureTools(agentCtx)
-      registerUsageRecorder(agentCtx, paused, usage)
+    setup: async (agentCtx) => {
+      await mountAgentComposition(ctx, agentCtx, composition)
+      registerUsageRecorder(agentCtx, paused, composition, usage)
       agentCtx.tools.register(createReportTool(report))
     },
   })
 
   let resumed: ImplementingRun
   try {
+    applyAgentPermission(ctx, handle.agent.session, composition)
     resumed = await ctx.admission.resumeActiveRun(runId, observedGit, authorization)
   } catch (error) {
     await handle.dispose()

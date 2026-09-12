@@ -4,7 +4,7 @@
 
 Run one orchestrator in a supported DSH profile on one VPS. Persist schedule enabled state and operator changes on the Host. Admission has an explicit timezone, reconciliation cadence and optional allowed time windows. Window closure prevents new dispatch; the scheduler disable command has the pause semantics in [lifecycle](lifecycle.md). Show the next reconciliation and next allowed dispatch separately.
 
-Use startup reconciliation of current tracker state rather than replaying every missed polling tick as fresh work. Manual reconcile respects the same gates. Configure maximum running and queued workflows; these are separate limits. Reuse timing facilities only where their scope fits global admission; [platform research](../research/dsh-platform.md#timing-ingress-and-git) distinguishes DSH reminders from this policy.
+Use startup reconciliation of current tracker state rather than replaying every missed polling tick as fresh work. Manual reconcile respects the same gates. Configure maximum running and queued workflows; these are separate limits. Reuse DSH timing facilities only where their scope fits global admission.
 
 Register one authoritative Autopilot configuration with DSH Settings and use its validation, precedence and revision-checked writes; preserve immutable per-run snapshots in run storage. Web edits and file-based deployment settings must show effective values. Operator edits affect future admission immediately; reductions to capacity do not kill existing work, while scheduler disable requests pause. Budget reductions stop additional spending authorization under the budget policy below. Record changes affecting active runs.
 
@@ -44,11 +44,11 @@ When budget becomes unavailable, request an operational pause, retain continuati
 
 Use provider-reported token usage and a recorded pricing version for estimates. Preserve input/cache/output categories supported by the provider. Credential, provider and model changes cannot silently mix currencies or invent conversions.
 
-The existing DSH request hook, usage records and token categories are recorded in [execution research](../research/dsh-execution.md). Reuse them for metering and authorization integration instead of replacing the LLM client. Cover conversation requests, retries, compaction, title generation and enabled children; map each to a run before authorization. Unowned model requests need an explicit deployment policy. Use those category definitions without double-counting; an estimate is not proof of a monetary upper bound.
+Reuse DSH request hooks, usage records and token categories for metering and authorization integration instead of replacing the LLM client. Cover conversation requests, retries, compaction, title generation and enabled children; map each to a run before authorization. Unowned model requests need an explicit deployment policy. Use those category definitions without double-counting; an estimate is not proof of a monetary upper bound.
 
 ## Durable state
 
-Autopilot owns run metadata, admission/queue state, budget entries, operation intents, notification outbox, worktree ownership and audit. DSH continues owning Session persistence and configuration; Git owns repository state. Reuse DSH storage domains and a supported backend where their atomicity meets these requirements; [platform evidence](../research/dsh-platform.md#durable-storage-fit) records the single-record limitation. Do not infer multi-record transactions merely because the backend uses SQLite.
+Autopilot owns run metadata, admission/queue state, budget entries, operation intents, notification outbox, worktree ownership and audit. DSH continues owning Session persistence and configuration; Git owns repository state. Reuse DSH storage domains and a supported backend where their atomicity meets these requirements. Do not infer multi-record transactions merely because the backend uses SQLite.
 
 **Proposed implementation selection:** prove an atomic record model for state-plus-intent and concurrent budget reservation through the existing domain facility first. Evaluate bounded record size, query cost, recovery and retention, not just a happy-path write. If a requirement cannot fit, document the failing case before choosing a narrow transactional extension or Autopilot-owned store. Select one authoritative store for each datum; do not mirror writes into native and custom implementations. Enforce a single Host owner of the runtime store; no distributed coordinator.
 
@@ -72,7 +72,7 @@ Provide one tested Linux deployment recipe using a supported DSH profile with pr
 
 Expose the Web UI through authenticated access and TLS using the supported DSH deployment model. One operator role has all application capabilities. Authentication can be provided by the deployment; identify the operator in audit when available, without introducing an account-management/RBAC subsystem. Protect state-changing requests through supported origin/authentication controls. Treat webhook ingress authentication independently of browser login.
 
-Use the verified access composition required by [plugin design](plugin.md). Candidate transports and upstream limitations are recorded in [DSH research](../research/dsh.md); a deployment recipe requires end-to-end evidence.
+Use the verified access composition required by [plugin design](plugin.md). A deployment recipe requires end-to-end evidence against the pinned DSH version.
 
 Health reports distinguish process alive, store usable, recovery complete, integrations available and admission permitted. A healthy paused scheduler is not a failure. Logs carry run/event identifiers and sanitized errors; avoid ticket transcripts and credential values.
 

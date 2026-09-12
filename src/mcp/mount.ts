@@ -2,28 +2,29 @@ import { isDeepStrictEqual } from 'node:util'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
 import type { TrackerProvider } from '../tracker.js'
-import type { McpReadContractMap } from './contracts.js'
-import { type McpReadTools, type ResolvedMcpReadTools, resolveMcpReadTools } from './read-tools.js'
+import { TrackerProviderError } from '../tracker.js'
+import type { McpContractMap } from './contracts.js'
+import { type McpTools, type ResolvedMcpTools, resolveMcpTools } from './read-tools.js'
 
-interface RequiredMcpToolset<Contracts extends McpReadContractMap> {
+interface RequiredMcpToolset<Contracts extends McpContractMap> {
   readonly serverName: string
   readonly contracts: Contracts
 }
 
-export interface McpTrackerMountOptions<Settings, Contracts extends McpReadContractMap> {
+export interface McpTrackerMountOptions<Settings, Contracts extends McpContractMap> {
   readonly settings: SettingsScope<Settings>
   requiredToolset(settings: Readonly<Settings>): RequiredMcpToolset<Contracts>
-  createProvider(settings: Readonly<Settings>, tools: McpReadTools<Contracts>): TrackerProvider
+  createProvider(settings: Readonly<Settings>, tools: McpTools<Contracts>): TrackerProvider
 }
 
-interface ActiveGeneration<Settings, Contracts extends McpReadContractMap> {
+interface ActiveGeneration<Settings, Contracts extends McpContractMap> {
   readonly settings: Readonly<Settings>
-  readonly resolved: ResolvedMcpReadTools<Contracts>
+  readonly resolved: ResolvedMcpTools<Contracts>
   readonly disposeProvider: () => Promise<void>
 }
 
 /** Keep one tracker generation registered exactly while its Settings snapshot and required MCP tools remain current. */
-export async function mountMcpTracker<Settings, Contracts extends McpReadContractMap>(
+export async function mountMcpTracker<Settings, Contracts extends McpContractMap>(
   ctx: Context,
   options: McpTrackerMountOptions<Settings, Contracts>,
 ): Promise<() => Promise<void>> {
@@ -36,11 +37,16 @@ export async function mountMcpTracker<Settings, Contracts extends McpReadContrac
     if (stopped) return
     let settings: Readonly<Settings>
     let required: RequiredMcpToolset<Contracts>
-    let resolved: ResolvedMcpReadTools<Contracts> | undefined
+    let resolved: ResolvedMcpTools<Contracts> | undefined
     try {
       settings = structuredClone(options.settings.get())
       required = options.requiredToolset(settings)
-      resolved = resolveMcpReadTools(ctx, required.serverName, required.contracts)
+      resolved = resolveMcpTools(
+        ctx,
+        required.serverName,
+        required.contracts,
+        (code, message) => new TrackerProviderError(code, message),
+      )
     } catch {
       await withdraw()
       ctx.logger.warn('autopilot MCP tracker configuration is invalid; provider remains unavailable')

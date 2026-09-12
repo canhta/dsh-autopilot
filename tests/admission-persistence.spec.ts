@@ -14,10 +14,10 @@ import {
   rewriteStoredState,
   type StoredAdmissionState,
   trackContext,
-  useDatabase,
   validBrief,
+  withDatabase,
 } from './admission-fixtures.js'
-import { fixtureExecutionSettings, mountHostServices } from './dsh-fixtures.js'
+import { fixtureCompositionClaim, fixtureExecutionSettings, mountHostServices } from './dsh-fixtures.js'
 
 describe('admission persistence and durable failures', () => {
   it('reopens with the same run identity and queue order', async () => {
@@ -76,7 +76,7 @@ describe('admission persistence and durable failures', () => {
     const first = await boot(path, [candidate()])
     await first.ctx.admission.reconcile({ source: 'startup' })
     await disposeTrackedContext(first.ctx)
-    useDatabase(path, (database) => {
+    withDatabase(path, (database) => {
       database
         .prepare('UPDATE u_autopilot_admission_state SET value = ? WHERE key = ?')
         .run(JSON.stringify({ schemaVersion: 1, runs: [{ state: 'queued' }] }), 'primary')
@@ -113,6 +113,68 @@ describe('admission persistence and durable failures', () => {
 
     await expect(ctx.plugin(Admission)).rejects.toThrow(/stored record.*does not match its schema/i)
     await disposeTrackedContext(ctx)
+  })
+
+  it('migrates a real version-6 domain record through the storage-domain boundary', async () => {
+    const path = await databasePath()
+    const first = await boot(path, [candidate()])
+    await first.ctx.admission.reconcile({ source: 'startup' })
+    await disposeTrackedContext(first.ctx)
+    rewriteStoredState(path, (state) => {
+      state.schemaVersion = 6
+      delete (state as StoredAdmissionState & { operatorCommands?: unknown }).operatorCommands
+      for (const run of state.runs) delete (run as typeof run & { deliveries?: unknown }).deliveries
+    })
+    withDatabase(path, (database) => {
+      database.prepare('UPDATE units SET version = 6 WHERE name = ?').run('autopilot_admission')
+    })
+
+    const second = await boot(path, [])
+
+    expect(second.ctx.admission.snapshot().runs).toMatchObject([{ displayKey: 'FIX-1', deliveries: [] }])
+    withDatabase(path, (database) => {
+      const unit = database.prepare('SELECT version FROM units WHERE name = ?').get('autopilot_admission') as {
+        version: number
+      }
+      const stored = database.prepare('SELECT value FROM u_autopilot_admission_state WHERE key = ?').get('primary') as {
+        value: string
+      }
+      expect(unit.version).toBe(6)
+      expect(JSON.parse(stored.value)).toMatchObject({ schemaVersion: 7, runs: [{ deliveries: [] }] })
+    })
+  })
+
+  it('retains more than 100 terminal runs until the aggregate byte bound', async () => {
+    const path = await databasePath()
+    const first = await boot(path, [candidate()])
+    await first.ctx.admission.reconcile({ source: 'manual' })
+    const queued = first.ctx.admission.snapshot().runs[0]
+    if (queued?.state !== 'queued') throw new Error('expected a queued fixture run')
+    await first.ctx.admission.cancelRun(queued.runId, '74ea9322-7336-49b1-bb42-5ea6be988720')
+    await disposeTrackedContext(first.ctx)
+    rewriteStoredState(path, (state) => {
+      const template = state.runs[0]
+      if (template === undefined) throw new Error('expected a stored cancelled run')
+      state.runs = Array.from({ length: 101 }, (_, index) => {
+        const run = structuredClone(template)
+        run.issueId = `issue-${String(index)}`
+        run.displayKey = `FIX-${String(index)}`
+        run.queueSequence = index + 1
+        run.runId = deterministicRunId(run)
+        return run
+      })
+      state.nextSequence = 102
+    })
+
+    const second = await boot(path, [])
+
+    expect(second.ctx.admission.snapshot().runs).toHaveLength(101)
+    await second.ctx.admission.setSchedulerMode('draining')
+    await disposeTrackedContext(second.ctx)
+
+    const third = await boot(path, [])
+    expect(third.ctx.admission.snapshot()).toMatchObject({ scheduler: { mode: 'draining' } })
+    expect(third.ctx.admission.snapshot().runs).toHaveLength(101)
   })
 
   it.each([
@@ -261,7 +323,7 @@ describe('admission persistence and durable failures', () => {
     const before = ctx.admission.snapshot()
     rejectAdmissionUpdates(path)
 
-    await expect(ctx.admission.claimNext()).rejects.toThrow()
+    await expect(ctx.admission.claimNext(fixtureCompositionClaim())).rejects.toThrow()
 
     expect(ctx.admission.snapshot()).toEqual(before)
     expect(ctx.admission.snapshot()).toMatchObject({
@@ -279,7 +341,7 @@ describe('admission persistence and durable failures', () => {
       fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees'),
     )
     await ctx.admission.reconcile({ source: 'manual' })
-    const claimed = await ctx.admission.claimNext()
+    const claimed = await ctx.admission.claimNext(fixtureCompositionClaim())
     if (claimed === undefined) throw new Error('expected a claimed run')
     await ctx.admission.recordWorktree(claimed.runId, {
       baseHead: 'a'.repeat(40),
@@ -313,7 +375,7 @@ describe('admission persistence and durable failures', () => {
       fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees'),
     )
     await ctx.admission.reconcile({ source: 'manual' })
-    const claimed = await ctx.admission.claimNext()
+    const claimed = await ctx.admission.claimNext(fixtureCompositionClaim())
     if (claimed === undefined) throw new Error('expected a claimed run')
 
     const completed = await ctx.admission.settle(

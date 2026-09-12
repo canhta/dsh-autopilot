@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { validateFixtureExecutionSettings } from '../config.js'
+import { validateExecutionSettings } from '../config.js'
 import { trackerProviderId } from '../tracker.js'
 import { readEveryCandidate } from './candidates.js'
 import { STATE_KEY } from './constants.js'
@@ -124,7 +124,7 @@ export class ResumeControl {
     const parsedRunId = runIdSchema.parse(runId)
     const parsedGit = executionSchema.shape.git.unwrap().parse(observedGit)
     const settings = this.dependencies.settings()
-    validateFixtureExecutionSettings(settings)
+    validateExecutionSettings(settings)
     const providerId = trackerProviderId(settings.trackerProvider)
     const beforeRead = this.dependencies.state()
     if (beforeRead.scheduler.mode !== 'enabled') throw new Error('scheduler must be enabled to resume a run')
@@ -207,7 +207,7 @@ export class ResumeControl {
   async requireActiveRecovery(runId: RunId, reason: ActiveRecoveryReason): Promise<PausedActiveRun> {
     const parsedRunId = runIdSchema.parse(runId)
     const parsedReason = z
-      .enum(['session-unavailable', 'workspace-unavailable', 'worktree-mismatch'])
+      .enum(['composition-unavailable', 'session-unavailable', 'workspace-unavailable', 'worktree-mismatch'])
       .parse(reason) as ActiveRecoveryReason
     let recovery: PausedActiveRun | undefined
     await this.dependencies.table().update(STATE_KEY, (current) => {

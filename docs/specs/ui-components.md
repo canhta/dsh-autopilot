@@ -1,6 +1,6 @@
 # UI modules and components
 
-This page owns Client decomposition, data/command behavior and functional acceptance. [Web UI](web-ui.md) owns navigation, visual rules, journeys and visual acceptance. Names below are Autopilot responsibilities, not instructions to create new components when DSH already supplies them; see [DSH Web reuse evidence](../research/dsh-web.md).
+This page owns Client decomposition, data/command behavior and functional acceptance. [Web UI](web-ui.md) owns navigation, visual rules, journeys and visual acceptance. Names below are Autopilot responsibilities, not instructions to create new components when DSH already supplies them.
 
 Implement components using the [DSH Client discipline](../engineering.md#client-code), keeping data ownership and subscriptions outside presentation components.
 
@@ -31,7 +31,7 @@ Host state is authoritative. Modules use the existing DSH Remote client with Aut
 
 Run detail uses composition: `BlockerCallout` renders numbered questions and the exact tracker action; `VerificationSummary` renders checks/results/skips and verified Git identity; `RunTimeline` renders timestamped normalized events, grouping repeated retries; `ResourceLinks` links to tracker, DSH Session, PR and worktree details. None derives success from prose or infers a next action from status color.
 
-Supply Session evidence through the existing DSH query/projection services described in [platform research](../research/dsh-platform.md#session-evidence-and-diagnostics). Restrict reads to the selected run's authorized Session/descendant identities, fetch bounded detail on demand and expose stale/unavailable evidence. Projection caches accelerate display; they do not determine run success, credit authorization or safe publication.
+Supply Session evidence through existing DSH query and projection services. Restrict reads to the selected run's authorized Session/descendant identities, fetch bounded detail on demand and expose stale/unavailable evidence. Projection caches accelerate display; they do not determine run success, credit authorization or safe publication.
 
 The panel footer uses the operator-command policy below. Preserve scroll/selection if an update arrives; announce significant state changes without moving focus.
 
@@ -72,7 +72,7 @@ Notifications use a destination list with add/edit/test controls inside Settings
 
 ## Shared primitives and state
 
-Compose the public DSH primitives, Settings services/slots, theme and localization listed in the [reuse map](../research/dsh-web.md#reuse-map). The baseline exports no generic table, accessible tablist, schema form or credential editor; implement only the required domain composition over shared atoms and semantic HTML. Reusing a dialog still requires verifying focus management. Autopilot-specific shared components are limited to repeated domain presentation: `RunStateLabel`, `ProviderResourceLink`, `UsageValue`, `CommandFeedback` and `QueryState`. A domain label carries text/icon/color; unknown remains distinct from zero/success.
+Compose public DSH primitives, Settings services and slots, theme and localization. The baseline exports no generic table, accessible tablist, schema form or credential editor; implement only the required domain composition over shared atoms and semantic HTML. Reusing a dialog still requires verifying focus management. Autopilot-specific shared components are limited to repeated domain presentation: `RunStateLabel`, `ProviderResourceLink`, `UsageValue`, `CommandFeedback` and `QueryState`. A domain label carries text/icon/color; unknown remains distinct from zero/success.
 
 `QueryState` distinguishes first load, empty domain, empty filtered result, denied/unavailable, stale cached data and retryable error. Preserve last known data on disconnection and visibly mark its age; disable unsafe mutations. Do not replace a useful table with a full-screen spinner during each refresh.
 
@@ -80,7 +80,7 @@ On reconnect, fetch a current Host snapshot before enabling actions from cached 
 
 `CommandFeedback` distinguishes request pending, Host accepted, action in progress, succeeded and rejected. For example accepted pause remains “Pausing” until the checkpoint is confirmed; accepted cleanup is not “Removed.” Persisted Host command identifiers handle duplicate submission. Errors explain what failed and how to recover, with diagnostic details collapsed.
 
-UI language uses registered provider names on links, historical runs and instructions. Core copy says ticket, tracker, code host or PR as appropriate. Provider metadata/schema contributions own provider fields; optional Client enhancements cannot be required for a usable validated form. Unsupported required capabilities prevent activation with a reason, following [provider policy](providers.md#readiness-and-capabilities).
+UI language uses registered provider names on links, historical runs and instructions. Core copy says ticket, tracker, code host or PR as appropriate. Provider metadata/schema contributions own provider fields; optional Client enhancements cannot be required for a usable validated form. Unsupported required capabilities prevent activation with a reason, following [provider policy](providers.md#availability-and-deployment).
 
 ## Component acceptance
 

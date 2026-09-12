@@ -6,7 +6,7 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import { describe, expect, it } from 'vitest'
 import { Admission } from '../src/admission.js'
 import { AutopilotConfig } from '../src/config.js'
-import { FIXTURE_MODEL, FIXTURE_PROVIDER } from '../src/dispatch.js'
+import { AutopilotOperations, PullRequestDispositionRegistry, RuntimeOwner } from '../src/operations.js'
 import { createFixtureTrackerProvider } from '../src/testing.js'
 import { Tracker } from '../src/tracker.js'
 import {
@@ -17,7 +17,17 @@ import {
   restartCandidate,
   temporaryDirectories,
 } from './dispatch-fixtures.js'
-import { fixtureExecutionSettings, mountExecutionHostServices } from './dsh-fixtures.js'
+import {
+  appliedFixturePermissions,
+  FIXTURE_MODEL,
+  FIXTURE_PRESET,
+  FIXTURE_PROVIDER,
+  fixtureCompositionClaim,
+  fixtureExecutionSettings,
+  mountExecutionHostServices,
+  mountedFixturePresets,
+  setFixtureAgentDefaults,
+} from './dsh-fixtures.js'
 
 describe('durable fixture dispatch: terminal outcomes', () => {
   it('runs one native Agent in a managed worktree and settles reported usage', async () => {
@@ -34,6 +44,24 @@ describe('durable fixture dispatch: terminal outcomes', () => {
 
     expect(completed).toMatchObject({
       state: 'publishing',
+      execution: {
+        agent: {
+          presetId: FIXTURE_PRESET,
+          presetFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+          permission: {
+            presetId: 'autopilot-unattended',
+            sandbox: 'workspace-write',
+            approval: 'never',
+          },
+          model: { provider: FIXTURE_PROVIDER, model: FIXTURE_MODEL },
+        },
+        codeHost: {
+          providerId: 'fixture-code-host',
+          bindingId: 'fixture:code-host',
+          repositoryId: 'fixture:repository',
+          repository: 'fixture/repository',
+        },
+      },
       outcome: {
         kind: 'verified',
         summary: 'The fixture run completed and its clean Git state was verified.',
@@ -45,6 +73,8 @@ describe('durable fixture dispatch: terminal outcomes', () => {
     expect(adapter.requests.every((request) => request.provider === FIXTURE_PROVIDER)).toBe(true)
     expect(adapter.requests.every((request) => request.model === FIXTURE_MODEL)).toBe(true)
     expect(adapter.requests.every((request) => request.sessionId === completed?.execution.sessionId)).toBe(true)
+    expect(mountedFixturePresets(ctx)).toEqual([FIXTURE_PRESET])
+    expect(appliedFixturePermissions(ctx)).toEqual(['autopilot-unattended'])
 
     const snapshot = ctx.admission.snapshot()
     expect(snapshot.budget).toEqual({ reservedTokens: 0, settledTokens: 18, usageUncertain: false })
@@ -69,6 +99,18 @@ describe('durable fixture dispatch: terminal outcomes', () => {
     await expect(ctx.sessionPersistence.stat(completed.execution.sessionId)).resolves.toMatchObject({
       header: { id: completed.execution.sessionId },
     })
+  })
+
+  it('leaves the ticket queued when the selected DSH model cannot be resolved', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-model-preflight-'))
+    temporaryDirectories.push(root)
+    const ctx = await bootFixture(root, new ControlledAdapter())
+    setFixtureAgentDefaults(ctx, { provider: 'missing-provider', model: 'missing-model' })
+
+    await expect(ctx.dispatch.dispatchNext()).rejects.toThrow(/composition is unavailable/i)
+
+    expect(ctx.admission.snapshot().runs[0]).toMatchObject({ state: 'queued' })
+    expect(await readdir(join(root, 'worktrees'))).toEqual([])
   })
 
   it('rejects a renamed Host-global delegation tool before it can create a descendant', async () => {
@@ -118,6 +160,31 @@ describe('durable fixture dispatch: terminal outcomes', () => {
     expect(completed).toMatchObject({ state: expectedState, outcome: { kind: reportKind } })
   })
 
+  it('keeps the tracker binding fenced while a terminal run has a permanently failed delivery', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'dsh-autopilot-permanent-delivery-fence-'))
+    temporaryDirectories.push(root)
+    const ctx = await bootFixture(root, new ControlledAdapter('failed'))
+    const failed = await ctx.dispatch.dispatchNext()
+    if (failed?.state !== 'failed') throw new Error('fixture did not produce a failed run')
+    const permanent = failed.deliveries.find(
+      (delivery) => delivery.kind === 'tracker-report' && delivery.status === 'pending',
+    )
+    if (permanent === undefined) throw new Error('fixture did not retain a tracker delivery')
+    const claim = await ctx.admission.claimDelivery(permanent.id)
+    await ctx.admission.failDelivery(
+      claim.runId,
+      claim.delivery.id,
+      claim.owner,
+      new Error('configured tracker target rejected the delivery'),
+      'permanent-failure',
+    )
+    await ctx.delivery.deliverPending()
+
+    await expect(ctx.settings.update('dsh-autopilot', { trackerProvider: 'replacement' })).rejects.toThrow(
+      /unresolved delivery intent/i,
+    )
+  })
+
   it.each(['missing', 'malformed', 'multiple', 'empty', 'oversized'] as const)(
     'fails closed when the terminal report is %s',
     async (reportMode) => {
@@ -162,7 +229,7 @@ describe('durable fixture dispatch: terminal outcomes', () => {
       state: 'failed',
       outcome: {
         kind: 'failed',
-        summary: 'The fixture model reported Git facts that do not match the managed worktree.',
+        summary: 'The Agent reported Git facts that do not match the managed worktree.',
       },
       execution: { git: { status: '?? UNCOMMITTED.md\n' } },
     })
@@ -210,7 +277,7 @@ describe('durable fixture dispatch: terminal outcomes', () => {
       settledTokens: 0,
       usageUncertain: true,
     })
-    await expect(ctx.admission.claimNext()).rejects.toThrow(/token usage is uncertain/)
+    await expect(ctx.admission.claimNext(fixtureCompositionClaim())).rejects.toThrow(/token usage is uncertain/)
   })
 
   it('fails closed when reported provider usage exceeds the reserved allowance', async () => {
@@ -228,7 +295,7 @@ describe('durable fixture dispatch: terminal outcomes', () => {
       },
       budget: { reservedTokens: 60, settledTokens: 0, usageUncertain: true },
     })
-    await expect(ctx.admission.claimNext()).rejects.toThrow(/token usage is uncertain/)
+    await expect(ctx.admission.claimNext(fixtureCompositionClaim())).rejects.toThrow(/token usage is uncertain/)
   })
 
   it('marks an abruptly interrupted run for explicit recovery without duplicating its worktree or Session', async () => {
@@ -263,7 +330,10 @@ describe('durable fixture dispatch: terminal outcomes', () => {
     await ctx.plugin(Tracker)
     ctx.tracker.register(createFixtureTrackerProvider({ issues: [restartCandidate()] }))
     await ctx.plugin(AutopilotConfig)
+    await ctx.plugin(RuntimeOwner, { authoritativeStorePath: join(root, 'state.sqlite') })
     await ctx.plugin(Admission)
+    await ctx.plugin(PullRequestDispositionRegistry)
+    await ctx.plugin(AutopilotOperations)
 
     const interrupted = ctx.admission.snapshot().runs[0]
     if (interrupted === undefined) {
@@ -291,7 +361,7 @@ describe('durable fixture dispatch: terminal outcomes', () => {
     const reconciled = await ctx.admission.reconcile({ source: 'startup' })
     expect(reconciled.decisions).toEqual([{ displayKey: 'FIX-7-RESTART', outcome: 'duplicate' }])
     expect(reconciled.runs).toHaveLength(1)
-    await expect(ctx.admission.claimNext()).resolves.toBeUndefined()
+    await expect(ctx.admission.claimNext(fixtureCompositionClaim())).resolves.toBeUndefined()
     expect(ctx.admission.snapshot().runs.filter((run) => run.displayKey === 'FIX-7-RESTART')).toHaveLength(1)
   })
 })

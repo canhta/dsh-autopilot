@@ -11,7 +11,7 @@ import {
   fixtureProvider,
   validBrief,
 } from './admission-fixtures.js'
-import { fixtureExecutionSettings } from './dsh-fixtures.js'
+import { fixtureCompositionClaim, fixtureExecutionSettings } from './dsh-fixtures.js'
 
 describe('admission holds and resumption', () => {
   it('durably holds queued work before allocation and excludes it from claims', async () => {
@@ -44,7 +44,7 @@ describe('admission holds and resumption', () => {
       settledTokens: 0,
       usageUncertain: false,
     })
-    await expect(first.ctx.admission.claimNext()).resolves.toBeUndefined()
+    await expect(first.ctx.admission.claimNext(fixtureCompositionClaim())).resolves.toBeUndefined()
 
     ;(held.pause as { reason: string }).reason = 'caller mutation'
     ;(held.brief as { content: string }).content = 'caller mutation'
@@ -59,7 +59,7 @@ describe('admission holds and resumption', () => {
 
     const second = await boot(path, [], 20, executionSettings)
     expect(second.ctx.admission.snapshot()).toEqual(beforeRestart)
-    await expect(second.ctx.admission.claimNext()).resolves.toBeUndefined()
+    await expect(second.ctx.admission.claimNext(fixtureCompositionClaim())).resolves.toBeUndefined()
   })
 
   it('rejects invalid, absent, paused, and active hold targets atomically', async () => {
@@ -76,7 +76,7 @@ describe('admission holds and resumption', () => {
     const [, queuedToPause] = ctx.admission.snapshot().runs
     if (queuedToPause?.state !== 'queued') throw new Error('expected a second queued run')
     const paused = await ctx.admission.holdQueued(queuedToPause.runId)
-    const active = await ctx.admission.claimNext()
+    const active = await ctx.admission.claimNext(fixtureCompositionClaim())
     if (active === undefined) throw new Error('expected an implementing run')
     const before = ctx.admission.snapshot()
 
@@ -153,6 +153,7 @@ describe('admission holds and resumption', () => {
         digest: '91b0486a0b355a6c11a84b3511ca2703c00d35e09a0a52a5e6ccd8140cb19c32',
         content: validBrief,
       },
+      deliveries: [],
       state: 'queued',
       queueClass: 'resumption',
       queuedAt: expect.any(String),
@@ -162,7 +163,7 @@ describe('admission holds and resumption', () => {
       ['FIX-RESUME', 'queued', 'resumption'],
       ['FIX-NEW', 'queued', 'new'],
     ])
-    const claimed = await ctx.admission.claimNext()
+    const claimed = await ctx.admission.claimNext(fixtureCompositionClaim())
     expect(claimed).toMatchObject({
       runId: 'run_2a43c5f5acb4d19acd9c606915e90a79',
       displayKey: 'FIX-RESUME',

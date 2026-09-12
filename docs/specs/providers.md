@@ -1,36 +1,39 @@
 # Provider architecture
 
-This page owns replaceable integration interfaces and tracker transport policy. [Scope](scope.md) owns product responsibilities; [integrations](integrations.md) owns external behavior. Source observations and live-validation limits belong in [tracker MCP research](../research/tracker-mcp.md).
+This page owns replaceable integration interfaces, tracker transport policy and live-validation limits. [Scope](scope.md) owns product responsibilities; [integrations](integrations.md) owns external behavior. Verify exact vendor MCP schemas against the installed official server before claiming conformance.
 
 ## Composition
 
 Use ordinary Cordis Service Definition / Provider / Consumer roles. The scheduler consumes normalized provider services; admission, execution and Web never call vendor tools or branch on Jira versus GitHub. One deployment selects one tracker binding/project and one independent code-host binding.
 
-Tracker outbound reads are MCP-first. The official GitHub or Atlassian MCP deployment owns vendor authentication and remote request transport; DSH's MCP client owns the MCP connection/reconnect lifecycle and publishes tools on `ctx.tools`. Autopilot invokes a closed set of exact, read-only semantic operations through `ctx.tools.execute()`, validates bounded machine-readable results and normalizes them into tracker facts. It does not contain a second GitHub or Jira REST client, outbound PAT, email/API-token flow or generic vendor-request escape hatch.
+Tracker and code-host operations are MCP-first. The official GitHub or Atlassian MCP deployment owns vendor authentication and remote request transport; DSH's MCP client owns the MCP connection/reconnect lifecycle and publishes tools on `ctx.tools`. Autopilot invokes a closed set of exact semantic operations through `ctx.tools.execute()`, validates bounded machine-readable results and normalizes them into provider facts. It does not contain a second GitHub or Jira REST client, outbound PAT, email/API-token flow or generic vendor-request escape hatch.
 
 Raw webhook verification is the intentional exception. Autopilot receives the exact HTTP bytes and headers, resolves only the inbound webhook secret, verifies the provider signature and returns a provider-qualified delivery identity. MCP then reads current tracker state; webhook payloads are never admission truth.
 
 ## Provider interface
 
-The current tracker interface is versioned and read-only:
+The current tracker interface is versioned; its write capabilities are an optional all-or-nothing pair:
 
 | Operation | Obligation |
 | --- | --- |
 | `readCandidates` | Enumerate one bounded page and fully hydrate each issue's comments, blocking dependencies and attributable readiness history. Continuation cursors are generation-local, authenticated and opaque. |
 | `verifyIngress` | Authenticate a bounded raw request without external writes and return a retry-stable provider-qualified delivery ID. |
+| `reconcileDelivery` | Read a stable report marker or current mutable projection before retry and return missing, delivered with receipt, or conflict. |
+| `deliver` | Append one bounded report or apply one current projection while preserving unrelated tracker fields. |
 
 Providers declare candidates, comments, dependencies, readiness and ingress capabilities. The registry rejects missing capabilities, duplicate IDs and incompatible interface versions. It combines caller cancellation with provider-generation withdrawal, drains active operations before disposal and validates normalized results at the seam.
 
 Keep provider entry points independently loadable. Shared MCP code may own exact-name construction, result bounds, tool-failure mapping, generation fencing and cursor protection; vendor modules own only their closed tool contracts, schemas, traversal and normalization. Do not expose a public `invoke(name, args)` module: arbitrary MCP names and vendor JSON must not become core knowledge.
 
-Future code-host and notification services remain separate normalized interfaces. A code host validates repository identity/access, resolves the approved remote/base, finds or creates one marked PR, reconciles ambiguous writes and returns `open`, `merged`, `closed-unmerged` or `unknown`. A notification provider validates a destination, delivers a versioned event and exposes retry/reconciliation facts. Tracker comments still go through the selected tracker provider; they are not a second notification-side tracker client.
+Code-host and notification services are separate normalized interfaces. A code host validates repository identity/access, resolves the approved remote/base, reconciles deterministic branch/tree/PR identity, creates one marked ready PR and returns an explicit receipt state. A notification provider reconciles and delivers a versioned event to one configured destination. Tracker comments still go through the selected tracker provider; they are not a second notification-side tracker client. Core selects provider identities stored in intents and contains no vendor-name switches.
 
 ## Exact MCP contracts
 
 A tracker provider becomes available only when every required tool exists under its configured `mcp__<serverName>__...` namespace and its live input definition satisfies the pinned contract.
 
 - GitHub requires official `get_me`, `list_issues`, `issue_read` (`get` and `get_comments`), and feature-gated `issue_dependency_read` (`get_blocked_by`), plus `autopilot_read_issue_timeline` in the same MCP namespace. Each traversal compares `get_me` with the configured integration actor. The timeline extension must use the same MCP deployment and identity; there is no direct REST or second-token fallback.
-- Jira requires primary `atlassianUserInfo` plus the flat Atlassian `?tools=all` operations `searchJiraIssuesUsingJql`, `listJiraIssueComments`, and `listJiraIssueChangelogs`. Each traversal compares the authenticated account with configuration and verifies the stable project ID returned for every candidate. Autopilot calls those exact tools; it does not use natural-language discovery or deferred execute-tier selection during reconciliation.
+- Jira requires primary `atlassianUserInfo` plus the flat Atlassian `?tools=all` operations `searchJiraIssuesUsingJql`, `listJiraIssueComments`, `listJiraIssueChangelogs`, `getJiraIssue`, `addOrEditJiraIssueComment`, `editJiraIssue`, and `transitionJiraIssue`. Each traversal compares the authenticated account with configuration and verifies stable project/issue identity. Autopilot calls those exact tools; it does not use natural-language discovery or deferred execute-tier selection during reconciliation.
+- GitHub code-host publication requires official `get_me`, `get_commit`, `get_repository_tree`, `list_branches`, `list_pull_requests`, `pull_request_read`, `create_branch`, `push_files`, and `create_pull_request`. The provider compares the authenticated actor and configured repository identity and reconciles before each mutation/retry.
 
 All calls use fixed arguments and unique internal call IDs. Prefer `structuredContent`; otherwise accept only the contract's single JSON text block. Enforce per-result byte limits, schema limits, page/item ceilings, repeated/non-advancing cursor rejection and cancellation. Recheck the bound tool definition after execution so a result from a replaced MCP generation cannot cross the seam. Tool errors are sanitized and conservatively classified; unsupported or malformed evidence fails closed.
 
@@ -40,7 +43,7 @@ The MCP mount watches Settings and DSH `tools/change`. It snapshots Settings, bi
 
 Programmatic root calls are incompatible with a DSH ToolRuntime configured globally as PTC-only: that mode admits only `run_code` at the root. Tracker deployments therefore require global `native` or `both` presentation until DSH supplies a distinct trusted Host-programmatic execution path. Never forge a PTC parent token to bypass this rule.
 
-Configure the official MCP deployment itself with read-only, least-privilege access and only required repositories/projects. All required operations for one binding, including the GitHub timeline extension, must share one MCP namespace so outbound authentication has one owner. The namespace is snapshotted with the provider binding; secret values never enter run state.
+Configure the official MCP deployment itself with least-privilege access and only required repositories/projects: tracker-read bindings remain read-only, while Jira delivery and GitHub publication bindings receive only their required writes. All required operations for one binding, including the GitHub timeline extension, must share one MCP namespace so outbound authentication has one owner. The namespace is snapshotted with the provider binding; secret values never enter run state.
 
 ## Normalized facts and policy
 

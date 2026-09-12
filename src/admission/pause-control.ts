@@ -1,4 +1,5 @@
 import { STATE_KEY } from './constants.js'
+import { appendLifecycleDeliveries } from './deliveries.js'
 import type {
   AdmissionSnapshot,
   GitExecutionSnapshot,
@@ -12,7 +13,8 @@ import type {
 } from './model.js'
 import { activePause, isPausedActiveRun, usageUncertaintyReason, validUsageSettlement } from './policy.js'
 import type { AdmissionDependencies } from './ports.js'
-import { executionSchema, runIdSchema, schedulerModeSchema, snapshotOf, stateSchema } from './state.js'
+import { executionSchema, runIdSchema, schedulerModeSchema, stateSchema } from './state.js'
+import { snapshotOf } from './state-domain.js'
 
 export class PauseControl {
   constructor(private readonly dependencies: AdmissionDependencies) {}
@@ -158,7 +160,7 @@ export class PauseControl {
       if (run?.state !== 'pausing') throw new Error(`run "${parsedRunId}" is not pausing`)
       const usageKnown = validUsageSettlement(run, usage)
       const pausedAt = new Date().toISOString()
-      paused = {
+      const pausedWithoutDeliveries: PausedActiveRun = {
         ...run,
         state: 'paused',
         execution: { ...run.execution, git: parsedGit },
@@ -170,6 +172,16 @@ export class PauseControl {
           ...(usageKnown ? {} : { usageUncertaintyReason: usageUncertaintyReason(run, usage) }),
         },
         pause: { ...run.pause, pausedAt, lastCompletedPhase: 'agent-quiescent' },
+      }
+      paused = {
+        ...pausedWithoutDeliveries,
+        deliveries: appendLifecycleDeliveries(
+          pausedWithoutDeliveries,
+          this.dependencies.settings(),
+          'paused',
+          current.revision + 1,
+          pausedAt,
+        ),
       }
       next.runs[index] = paused
       if (usageKnown) {

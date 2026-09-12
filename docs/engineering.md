@@ -1,6 +1,6 @@
 # Plugin engineering standards
 
-These are rules for implementing this repository, not instructions imposed on target repositories. [DSH practice evidence](research/dsh-practices.md) records their upstream basis and limits. Product behavior stays in `specs/`; exact upstream APIs stay in the [capability map](research/dsh.md#capability-reading-map).
+These are rules for implementing this repository, not instructions imposed on target repositories. Product behavior stays in `specs/`; verify exact upstream APIs against the pinned DSH dependency and current public source before using them.
 
 ## Host code and public APIs
 
@@ -18,7 +18,7 @@ Compose in `apply` through DSH slots and injected services. Derive the framework
 
 Keep Host-derived business data in its owning data object. Declared stores hold shared view state such as selection and drafts; local component state holds local interaction. Subscribe through framework-provided hooks; do not mirror external snapshots with manual subscriptions. Keep observable and unchanged snapshot identities stable. Command/query behavior belongs to [UI components](specs/ui-components.md).
 
-Use public static primitives, not another feature plugin's private exports. Route cross-feature UI through declared slots, not ReactNode-valued service props. Use CSS Modules and semantic DSH tokens; route product copy, accessibility names and formatters through typed locale dictionaries. Keep external ticket text and stable identifiers verbatim. [Web evidence](research/dsh-web.md) owns exact imports; [visual requirements](specs/web-ui.md) own appearance and accessibility acceptance.
+Use public static primitives, not another feature plugin's private exports. Route cross-feature UI through declared slots, not ReactNode-valued service props. Use CSS Modules and semantic DSH tokens; route product copy, accessibility names and formatters through typed locale dictionaries. Keep external ticket text and stable identifiers verbatim. Verify exact imports against the pinned DSH package; [visual requirements](specs/web-ui.md) own appearance and accessibility acceptance.
 
 ## Verification by changed surface
 
@@ -26,7 +26,7 @@ Plan the relevant tiers on the implementation issue before coding. Use real DSH 
 
 | Changed surface | Required evidence |
 | --- | --- |
-| Policy, provider or durable operation | Behavior tests for success, denial, malformed external input, uncertain acknowledgement and recovery; relevant [provider conformance](specs/providers.md#extension-and-acceptance). |
+| Policy, provider or durable operation | Behavior tests for success, denial, malformed external input, uncertain acknowledgement and recovery; relevant [provider conformance](specs/providers.md#future-providers-and-acceptance). |
 | Registration, async resource or composition | Loader-booted fixture through a supported profile; missing dependency, withdrawal, unload/remount and no surviving resources or duplicate registrations. Hand-built plugin mounting alone is insufficient. |
 | Persistence, pause or external side effect | Real storage/fixture Git state across actual restart; verify committed and uncommitted outcomes independently, not just a returned status. |
 | Model-visible input/output | Keyless assembled Session replay/expected-output evidence; inspect persisted events and actual workspace effects. Update intended expectations explicitly, never refresh them in CI. |

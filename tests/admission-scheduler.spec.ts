@@ -7,7 +7,7 @@ import {
   fixtureProvider,
   rejectAdmissionUpdates,
 } from './admission-fixtures.js'
-import { fixtureExecutionSettings } from './dsh-fixtures.js'
+import { fixtureCompositionClaim, fixtureExecutionSettings } from './dsh-fixtures.js'
 
 describe('admission scheduler and allocated pauses', () => {
   it('persists scheduler stops across restarts without reading or changing admission state', async () => {
@@ -45,7 +45,7 @@ describe('admission scheduler and allocated pauses', () => {
     expect(drainingReconcile).toEqual({ ...beforeDrainingReconcile, decisions: [] })
     expect(providerReads).toBe(1)
     expect(drainingReconcile.acceptedIngress).not.toContain('fixture:draining-delivery')
-    await expect(first.ctx.admission.claimNext()).resolves.toBeUndefined()
+    await expect(first.ctx.admission.claimNext(fixtureCompositionClaim())).resolves.toBeUndefined()
     await disposeTrackedContext(first.ctx)
 
     const second = await boot(path, [candidate()], 20, executionSettings, countRead)
@@ -67,7 +67,7 @@ describe('admission scheduler and allocated pauses', () => {
     const disabledReconcile = await third.ctx.admission.reconcile({ source: 'scheduled' })
     expect(disabledReconcile).toEqual({ ...beforeDisabledReconcile, decisions: [] })
     expect(providerReads).toBe(1)
-    await expect(third.ctx.admission.claimNext()).resolves.toBeUndefined()
+    await expect(third.ctx.admission.claimNext(fixtureCompositionClaim())).resolves.toBeUndefined()
   })
 
   it('rejects disable atomically while implementing but permits draining settlement', async () => {
@@ -78,7 +78,7 @@ describe('admission scheduler and allocated pauses', () => {
       fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees'),
     )
     await ctx.admission.reconcile({ source: 'manual' })
-    const claimed = await ctx.admission.claimNext()
+    const claimed = await ctx.admission.claimNext(fixtureCompositionClaim())
     if (claimed === undefined) throw new Error('expected an implementing run')
     const beforeDisable = ctx.admission.snapshot()
 
@@ -100,7 +100,7 @@ describe('admission scheduler and allocated pauses', () => {
       runs: [{ state: 'failed' }],
       budget: { reservedTokens: 0, settledTokens: 10, usageUncertain: false },
     })
-    await expect(ctx.admission.claimNext()).resolves.toBeUndefined()
+    await expect(ctx.admission.claimNext(fixtureCompositionClaim())).resolves.toBeUndefined()
   })
 
   it('persists an allocated pause checkpoint and keeps scheduler enablement blocked until quiescence', async () => {
@@ -108,7 +108,7 @@ describe('admission scheduler and allocated pauses', () => {
     const executionSettings = fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees')
     const first = await boot(path, [candidate()], 20, executionSettings)
     await first.ctx.admission.reconcile({ source: 'manual' })
-    const claimed = await first.ctx.admission.claimNext()
+    const claimed = await first.ctx.admission.claimNext(fixtureCompositionClaim())
     if (claimed === undefined) throw new Error('expected an implementing run')
 
     const requested = await first.ctx.admission.requestSchedulerDisable()
@@ -175,7 +175,7 @@ describe('admission scheduler and allocated pauses', () => {
       fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees'),
     )
     await ctx.admission.reconcile({ source: 'manual' })
-    const claimed = await ctx.admission.claimNext()
+    const claimed = await ctx.admission.claimNext(fixtureCompositionClaim())
     if (claimed === undefined) throw new Error('expected an implementing run')
     await ctx.admission.requestSchedulerDisable()
     const before = ctx.admission.snapshot()
@@ -202,7 +202,7 @@ describe('admission scheduler and allocated pauses', () => {
     const executionSettings = fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees')
     const first = await boot(path, [candidate()], 20, executionSettings)
     await first.ctx.admission.reconcile({ source: 'manual' })
-    const claimed = await first.ctx.admission.claimNext()
+    const claimed = await first.ctx.admission.claimNext(fixtureCompositionClaim())
     if (claimed === undefined) throw new Error('expected an implementing run')
     await first.ctx.admission.requestSchedulerDisable()
     const git = { baseHead: 'a'.repeat(40), head: 'b'.repeat(40), status: '' }
@@ -243,7 +243,7 @@ describe('admission scheduler and allocated pauses', () => {
       }),
     )
     await ctx.admission.reconcile({ source: 'manual' })
-    const claimed = await ctx.admission.claimNext()
+    const claimed = await ctx.admission.claimNext(fixtureCompositionClaim())
     if (claimed === undefined) throw new Error('expected an implementing run')
     expect(claimed.budget).toMatchObject({ capTokens: 80, allowanceTokens: 20, reservedTokens: 20 })
     await ctx.admission.requestSchedulerDisable()
@@ -279,7 +279,7 @@ describe('admission scheduler and allocated pauses', () => {
       fixtureExecutionSettings('/tmp/fixture-target', '/tmp/fixture-worktrees'),
     )
     await ctx.admission.reconcile({ source: 'manual' })
-    const claimed = await ctx.admission.claimNext()
+    const claimed = await ctx.admission.claimNext(fixtureCompositionClaim())
     if (claimed === undefined) throw new Error('expected an implementing run')
     await ctx.admission.requestSchedulerDisable()
     const git = { baseHead: 'a'.repeat(40), head: 'b'.repeat(40), status: '' }

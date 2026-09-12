@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from 'node:util'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import s from '@deepseek-ai/schemastery'
 import { TrackerProviderError } from '../../tracker.js'
@@ -18,6 +19,25 @@ export interface GitHubIssuesSettings {
   completedStateReasons: string[]
   automationActorIds: string[]
   trustedHumanActorIds: string[]
+}
+
+const protectedSettingKeys = [
+  'mcpServerName',
+  'repositoryOwner',
+  'repositoryName',
+  'repositoryId',
+  'integrationActorId',
+  'readyLabel',
+  'priorityLabelRanks',
+  'defaultPriorityRank',
+  'completedStateReasons',
+  'automationActorIds',
+  'trustedHumanActorIds',
+] as const satisfies readonly (keyof GitHubIssuesSettings)[]
+
+/** Whether a Settings edit would reinterpret an existing GitHub Issues run. */
+export function changesGitHubIssuesBinding(current: GitHubIssuesSettings, next: GitHubIssuesSettings): boolean {
+  return protectedSettingKeys.some((key) => !isDeepStrictEqual(current[key], next[key]))
 }
 
 export const githubIssuesSettingsSchema: s<GitHubIssuesSettings> = s.object({

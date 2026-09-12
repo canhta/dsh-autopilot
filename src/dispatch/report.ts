@@ -13,13 +13,28 @@ export interface ReportRecorder {
 export function createReportTool(recorder: ReportRecorder) {
   return defineTool({
     name: 'autopilot_report',
-    description: 'Submit the single structured terminal report for this Autopilot fixture run.',
+    description: 'Submit the single structured terminal report for this Autopilot run.',
     parameters: {
       kind: { type: 'string', enum: ['verified', 'blocked', 'failed'], required: true },
       summary: { type: 'string', required: true },
       evidence: { type: 'array', items: { type: 'string' }, required: true },
       gitHead: { type: 'string' },
       gitStatus: { type: 'string' },
+      verification: {
+        type: 'array',
+        items: {
+          type: 'object',
+          additionalProperties: false,
+          properties: {
+            command: { type: 'string', required: true },
+            status: { type: 'string', enum: ['passed', 'failed', 'skipped'], required: true },
+            summary: { type: 'string', required: true },
+            reason: { type: 'string' },
+          },
+        },
+      },
+      pullRequestTitle: { type: 'string' },
+      pullRequestBody: { type: 'string' },
     },
     output: {
       schema: { type: 'string', const: 'accepted' },
@@ -42,18 +57,53 @@ export function createReportTool(recorder: ReportRecorder) {
         throw new TypeError('report evidence must contain only bounded non-empty entries')
       }
       if (args.kind === 'verified') {
-        if (args.gitHead === undefined || !/^[a-f0-9]{40,64}$/.test(args.gitHead) || args.gitStatus === undefined) {
-          throw new TypeError('verified reports require an exact Git head and status')
+        if (
+          args.gitHead === undefined ||
+          !/^[a-f0-9]{40,64}$/.test(args.gitHead) ||
+          args.gitStatus === undefined ||
+          args.verification === undefined ||
+          args.verification.length === 0 ||
+          args.pullRequestTitle === undefined ||
+          args.pullRequestBody === undefined
+        ) {
+          throw new TypeError('verified reports require exact Git facts, verification results, and a PR payload')
+        }
+        if (
+          args.verification.length > MAX_REPORT_EVIDENCE ||
+          args.verification.some(
+            (result) =>
+              result.command.length === 0 ||
+              result.summary.length === 0 ||
+              result.status === 'failed' ||
+              (result.status === 'skipped') !== (result.reason !== undefined) ||
+              [result.command, result.summary, result.reason]
+                .filter((value): value is string => value !== undefined)
+                .some((value) => textEncoder.encode(value).byteLength > MAX_REPORT_TEXT_BYTES),
+          ) ||
+          args.pullRequestTitle.length === 0 ||
+          textEncoder.encode(args.pullRequestTitle).byteLength > MAX_REPORT_TEXT_BYTES ||
+          args.pullRequestBody.length === 0 ||
+          textEncoder.encode(args.pullRequestBody).byteLength > 32 * 1024
+        ) {
+          throw new TypeError('verified report evidence or PR payload is invalid')
         }
         recorder.outcome = {
           kind: args.kind,
           summary: args.summary,
           evidence: [...args.evidence],
           reportedGit: { head: args.gitHead, status: args.gitStatus },
+          verification: args.verification.map((result) => ({ ...result })),
+          suggestedPullRequest: { title: args.pullRequestTitle, body: args.pullRequestBody },
         }
       } else {
-        if (args.gitHead !== undefined || args.gitStatus !== undefined) {
-          throw new TypeError('blocked and failed reports must not claim verified Git facts')
+        if (
+          args.gitHead !== undefined ||
+          args.gitStatus !== undefined ||
+          args.verification !== undefined ||
+          args.pullRequestTitle !== undefined ||
+          args.pullRequestBody !== undefined
+        ) {
+          throw new TypeError('blocked and failed reports must not claim verified publication facts')
         }
         recorder.outcome = { kind: args.kind, summary: args.summary, evidence: [...args.evidence] }
       }
@@ -64,10 +114,10 @@ export function createReportTool(recorder: ReportRecorder) {
 
 export function validatedOutcome(report: ReportRecorder, git: GitExecutionSnapshot): ExecutionOutcome {
   if (report.violation !== undefined) {
-    return { kind: 'failed', summary: 'The fixture model violated the report contract.', evidence: [report.violation] }
+    return { kind: 'failed', summary: 'The Agent violated the report contract.', evidence: [report.violation] }
   }
   if (report.outcome === undefined) {
-    return { kind: 'failed', summary: 'The fixture model did not submit a terminal report.', evidence: [] }
+    return { kind: 'failed', summary: 'The Agent did not submit a terminal report.', evidence: [] }
   }
   if (
     report.outcome.kind === 'verified' &&
@@ -75,7 +125,7 @@ export function validatedOutcome(report: ReportRecorder, git: GitExecutionSnapsh
   ) {
     return {
       kind: 'failed',
-      summary: 'The fixture model reported Git facts that do not match the managed worktree.',
+      summary: 'The Agent reported Git facts that do not match the managed worktree.',
       evidence: [truncateUtf8(`head=${git.head}\nstatus=${git.status}`)],
     }
   }
@@ -85,18 +135,18 @@ export function validatedOutcome(report: ReportRecorder, git: GitExecutionSnapsh
 export function executionPrompt(run: ImplementingRun | PausingRun): string {
   const git = run.execution.git
   if (git === undefined) throw new Error('the managed worktree has no durable Git facts')
-  return `Execute the approved Agent Brief below in the managed fixture worktree. Use autopilot_report exactly once with a verified, blocked, or failed outcome before finishing. A verified report must repeat the exact final Git head and porcelain status.\n\nManaged Git head: ${git.head}\nManaged Git status: ${JSON.stringify(git.status)}\n\n${run.brief.content}`
+  return `Execute the approved Agent Brief below in the managed worktree. Use autopilot_report exactly once with a verified, blocked, or failed outcome before finishing. A verified report must repeat the exact final Git head and porcelain status, list each verification command/result or explicit skip reason, and supply a ready-for-review pull-request title and body.\n\nManaged Git head: ${git.head}\nManaged Git status: ${JSON.stringify(git.status)}\n\n${run.brief.content}`
 }
 
 export function continuationPrompt(run: ImplementingRun): string {
   const git = run.execution.git
   if (git === undefined) throw new Error('the managed worktree has no durable Git facts')
-  return `Continue the approved Agent Brief in this same persisted Session and managed worktree. Reconcile any interrupted operation from the prior pause before repeating a side effect. Use autopilot_report exactly once with a verified, blocked, or failed outcome before finishing. A verified report must repeat the exact final Git head and porcelain status.\n\nManaged Git head: ${git.head}\nManaged Git status: ${JSON.stringify(git.status)}\n\n${run.brief.content}`
+  return `Continue the approved Agent Brief in this same persisted Session and managed worktree. Reconcile any interrupted operation from the prior pause before repeating a side effect. Use autopilot_report exactly once with a verified, blocked, or failed outcome before finishing. A verified report must repeat the exact final Git head and porcelain status, list each verification command/result or explicit skip reason, and supply a ready-for-review pull-request title and body.\n\nManaged Git head: ${git.head}\nManaged Git status: ${JSON.stringify(git.status)}\n\n${run.brief.content}`
 }
 
 export function errorMessage(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error)
-  return message || 'unknown fixture dispatch failure'
+  return message || 'unknown Agent execution failure'
 }
 
 export function truncateUtf8(value: string): string {

@@ -3,7 +3,7 @@ import { type GenerateOptions, LlmAdapter, type StreamChunk } from '@deepseek-ai
 import { describe, it } from 'vitest'
 import { Admission } from '../../src/admission.js'
 import { AutopilotConfig } from '../../src/config.js'
-import { Dispatch, FIXTURE_PROVIDER } from '../../src/dispatch.js'
+import { AutopilotOperations, PullRequestDispositionRegistry, RuntimeOwner } from '../../src/operations.js'
 import { createFixtureTrackerProvider } from '../../src/testing.js'
 import {
   readinessGeneration,
@@ -13,7 +13,8 @@ import {
   trackerCommentId,
   trackerIssueId,
 } from '../../src/tracker.js'
-import { fixtureExecutionSettings, mountExecutionHostServices } from '../dsh-fixtures.js'
+import { mountExecutionLifecycle } from '../dispatch-fixtures.js'
+import { FIXTURE_PROVIDER, fixtureExecutionSettings, mountExecutionHostServices } from '../dsh-fixtures.js'
 
 const root = process.env.DSH_AUTOPILOT_CRASH_ROOT
 
@@ -89,8 +90,11 @@ describe.skipIf(root === undefined)('isolated crash fixture', () => {
     await ctx.plugin(Tracker)
     ctx.tracker.register(createFixtureTrackerProvider({ issues: [candidate()] }))
     await ctx.plugin(AutopilotConfig)
+    await ctx.plugin(RuntimeOwner, { authoritativeStorePath: `${root}/state.sqlite` })
     await ctx.plugin(Admission)
-    await ctx.plugin(Dispatch)
+    await ctx.plugin(PullRequestDispositionRegistry)
+    await ctx.plugin(AutopilotOperations)
+    await mountExecutionLifecycle(ctx)
     await ctx.admission.reconcile({ source: 'manual' })
 
     await ctx.dispatch.dispatchNext()

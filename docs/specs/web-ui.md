@@ -2,7 +2,7 @@
 
 ## Placement and data
 
-Add `Autopilot` as a global DSH Web sidebar entry. The panel works without selecting a conversation. Settings are a separate DSH Settings contribution; link to them from the panel rather than building two configuration editors.
+Add `Autopilot` as a global DSH Web sidebar entry. The panel works without selecting a conversation. Settings are a separate DSH Settings contribution; link to them from Operations rather than building two configuration editors.
 
 The default view is Queue & Runs, not a metrics dashboard. Use five local tabs: Queue & Runs, Schedule, Budget, Notifications, Worktrees. Keep provider and policy editing in DSH Settings. Do not add a second app-wide sidebar. [UI components](ui-components.md) owns the exact module/component responsibilities and query/command behavior.
 
@@ -61,4 +61,4 @@ Before accepting Client implementation, collect screenshots within the real DSH 
 
 Check legibility and consistent alignment without page-level horizontal overflow; all important actions work with keyboard, visible focus and appropriate dialog focus return. Verify normal text contrast of at least 4.5:1 and meaningful non-text control contrast of 3:1, plus status comprehension without color. Test reduced motion, zoom/reflow, long localized copy and screen-reader names/live feedback. Review screenshots against the visual table above; reject the change if it introduces an unrelated design system or obscures operational decisions.
 
-Functional scenarios belong to [component acceptance](ui-components.md#component-acceptance). Public DSH reuse options and source citations belong to [DSH Web research](../research/dsh-web.md).
+Functional scenarios belong to [component acceptance](ui-components.md#component-acceptance). Verify public DSH Web reuse against the pinned dependency and current upstream source.

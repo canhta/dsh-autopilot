@@ -46,6 +46,8 @@ export const TRACKER_INTERFACE_VERSION = 2 as const
 export const trackerCapabilities = ['candidates', 'comments', 'dependencies', 'readiness', 'ingress'] as const
 /** Capability name declared by a compatible provider generation. */
 export type TrackerCapability = (typeof trackerCapabilities)[number]
+export const trackerWriteCapabilities = ['reports', 'projections'] as const
+export type TrackerWriteCapability = (typeof trackerWriteCapabilities)[number]
 
 /** Immutable comment data used to select and retain the Agent Brief. */
 export interface TrackerComment {
@@ -128,10 +130,59 @@ export interface TrackerIngressDelivery {
   deliveryId: string
 }
 
+export interface TrackerReportDelivery {
+  readonly kind: 'report'
+  readonly deliveryId: string
+  readonly eventId: string
+  readonly bindingId: TrackerBindingId
+  readonly issueId: TrackerIssueId
+  readonly displayKey: string
+  readonly body: string
+}
+
+export type TrackerProjectionState = 'queued' | 'implementing' | 'paused' | 'blocked' | 'failed' | 'completed'
+
+export interface TrackerProjectionDelivery {
+  readonly kind: 'projection'
+  readonly deliveryId: string
+  readonly eventId: string
+  readonly bindingId: TrackerBindingId
+  readonly issueId: TrackerIssueId
+  readonly displayKey: string
+  readonly readinessGeneration: ReadinessGeneration
+  readonly runRevision: number
+  readonly desiredState: TrackerProjectionState
+}
+
+export type TrackerOutboundDelivery = TrackerReportDelivery | TrackerProjectionDelivery
+
+export interface TrackerOutboundReceipt {
+  readonly receiptId: string
+  readonly receivedAt: string
+}
+
+export type TrackerDeliveryObservation =
+  | { readonly kind: 'missing' }
+  | { readonly kind: 'delivered'; readonly receipt: TrackerOutboundReceipt }
+  | { readonly kind: 'conflict'; readonly reason: string }
+
+export interface TrackerProviderWriteRequest {
+  readonly delivery: TrackerOutboundDelivery
+  readonly signal: AbortSignal
+}
+
 /** Non-replayed availability transition for one provider generation. */
 export interface TrackerProviderLifecycleEvent {
   kind: 'available' | 'unavailable'
   providerId: TrackerProviderId
+}
+
+/** Bounded, secret-free metadata for one currently available tracker provider generation. */
+export interface TrackerProviderRegistration {
+  readonly id: TrackerProviderId
+  readonly displayName: string
+  readonly configurationNamespace: string
+  readonly capabilities: readonly (TrackerCapability | TrackerWriteCapability)[]
 }
 
 /** Versioned read-only tracker adapter registered as one lifecycle-owned generation. */
@@ -140,7 +191,7 @@ export interface TrackerProvider {
   interfaceVersion: typeof TRACKER_INTERFACE_VERSION
   displayName: string
   configurationNamespace: string
-  capabilities: readonly TrackerCapability[]
+  capabilities: readonly (TrackerCapability | TrackerWriteCapability)[]
   /**
    * Read one provider page without external writes. The cursor, when present, must come from the preceding page.
    * Resolve with provider data or reject with `TrackerProviderError`; reject with the signal reason when cancelled.
@@ -152,6 +203,10 @@ export interface TrackerProvider {
    * input and reject with the signal reason when cancelled.
    */
   verifyIngress(request: TrackerProviderIngressRequest): Promise<TrackerIngressDelivery>
+  /** Reconcile a stable outbound identity before any retry. Required when reports/projections are declared. */
+  reconcileDelivery?(request: TrackerProviderWriteRequest): Promise<TrackerDeliveryObservation>
+  /** Apply one report or mutable projection. Required when reports/projections are declared. */
+  deliver?(request: TrackerProviderWriteRequest): Promise<TrackerOutboundReceipt>
 }
 
 /** A generation-scoped, normalized provider view valid only during its `Tracker.withProvider` callback. */
@@ -168,6 +223,11 @@ export interface TrackerReader {
    * normalized as `TrackerProviderError`. Successful verification does not retain a receipt.
    */
   verifyIngress(request: TrackerIngressRequest, signal?: AbortSignal): Promise<TrackerIngressDelivery>
+}
+
+export interface TrackerWriter {
+  reconcileDelivery(delivery: TrackerOutboundDelivery, signal?: AbortSignal): Promise<TrackerDeliveryObservation>
+  deliver(delivery: TrackerOutboundDelivery, signal?: AbortSignal): Promise<TrackerOutboundReceipt>
 }
 
 /** Stable failure classification safe for scheduling, diagnostics, and HTTP mapping. */
@@ -195,5 +255,35 @@ export class TrackerProviderError extends Error {
   ) {
     super(message)
     this.name = 'TrackerProviderError'
+  }
+}
+
+/** Map a provider failure code to stable operator-facing text without retaining provider-authored details. */
+export function publicTrackerFailureMessage(code: TrackerProviderErrorCode): string {
+  switch (code) {
+    case 'authentication':
+      return 'Tracker authentication failed.'
+    case 'permission':
+      return 'Tracker access was denied.'
+    case 'invalid-configuration':
+      return 'Tracker configuration is invalid or incomplete.'
+    case 'not-found':
+      return 'A configured tracker resource was not found.'
+    case 'conflict':
+      return 'Tracker state could not be reconciled safely.'
+    case 'rate-limit':
+      return 'Tracker rate limiting deferred reconciliation.'
+    case 'timeout':
+      return 'The tracker request timed out.'
+    case 'transient':
+      return 'The tracker was temporarily unavailable.'
+    case 'unsupported-capability':
+      return 'The selected tracker does not support this operation.'
+    case 'ambiguous-acknowledgement':
+      return 'Tracker acknowledgement could not be confirmed.'
+    case 'invalid-response':
+      return 'The tracker returned an invalid or unsafe response.'
+    case 'provider-unavailable':
+      return 'The selected tracker provider is unavailable.'
   }
 }

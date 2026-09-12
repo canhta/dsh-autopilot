@@ -32,9 +32,7 @@ export function normalizeIssue(
   }))
 
   return {
-    bindingId: trackerBindingId(
-      `jira:${createHash('sha256').update(`${config.cloudId}\0${config.projectId}`).digest('hex').slice(0, 32)}`,
-    ),
+    bindingId: jiraBindingId(config),
     issueId: trackerIssueId(issue.id),
     displayKey: issue.key,
     summary: issue.fields.summary,
@@ -72,7 +70,7 @@ function normalizeDependencies(rawLinks: readonly unknown[], config: JiraSetting
   return dependencies
 }
 
-function normalizeReadiness(changes: readonly JiraChangelog[], config: JiraSettings): TrackerReadiness {
+export function normalizeReadiness(changes: readonly JiraChangelog[], config: JiraSettings): TrackerReadiness {
   const transitions = changes
     .filter((change) =>
       change.items.some(
@@ -116,7 +114,7 @@ function labelSet(value: string | null | undefined): Set<string> {
   )
 }
 
-function jiraTimestamp(value: string, subject: string): string {
+export function jiraTimestamp(value: string, subject: string): string {
   const timestamp = new Date(value)
   if (Number.isNaN(timestamp.getTime())) {
     throw new TrackerProviderError('invalid-response', `Jira ${subject} has an invalid timestamp`)
@@ -124,7 +122,7 @@ function jiraTimestamp(value: string, subject: string): string {
   return timestamp.toISOString()
 }
 
-function adfToText(value: unknown): string {
+export function adfToText(value: unknown): string {
   if (typeof value === 'string') return value
   if (Array.isArray(value)) return value.map(adfToText).join('')
   if (typeof value !== 'object' || value === null) return ''
@@ -145,4 +143,10 @@ function adfToText(value: unknown): string {
     return `${'#'.repeat(level)} ${content}\n`
   }
   return ['paragraph', 'listItem'].includes(String(node.type)) ? `${content}\n` : content
+}
+
+export function jiraBindingId(config: Pick<JiraSettings, 'cloudId' | 'projectId'>) {
+  return trackerBindingId(
+    `jira:${createHash('sha256').update(`${config.cloudId}\0${config.projectId}`).digest('hex').slice(0, 32)}`,
+  )
 }

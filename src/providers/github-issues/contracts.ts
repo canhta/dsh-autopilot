@@ -4,7 +4,7 @@ import {
   arrayItemEnumIncludes,
   arrayItemsAreStrings,
   decodeMcpJson,
-  defineMcpReadContracts,
+  defineMcpContracts,
   hasInputShape,
   hasNoArgumentObjectInput,
   propertyEnumIncludes,
@@ -24,7 +24,7 @@ export interface GitHubCoordinate {
   issueNumber: number
 }
 
-export const githubMcpContracts = defineMcpReadContracts({
+export const githubMcpContracts = defineMcpContracts({
   readIdentity: {
     rawName: 'get_me',
     maxResultBytes: 256 * 1024,

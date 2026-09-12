@@ -1,7 +1,8 @@
 import { createHmac } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
-import { registerGitHubIssuesProvider } from '../src/github-issues.js'
+import { inject as githubIssuesInject, registerGitHubIssuesProvider } from '../src/github-issues.js'
+import { changesGitHubIssuesBinding } from '../src/providers/github-issues/settings.js'
 import { trackerProviderId } from '../src/tracker.js'
 import { providerTestContext, registerJsonMcpTool } from './mcp-provider-fixtures.js'
 
@@ -165,6 +166,20 @@ function mcpProperties(...names: string[]): Record<string, unknown> {
 }
 
 describe('GitHub Issues MCP tracker provider', () => {
+  it('fences only settings that can reinterpret durable GitHub Issues work', () => {
+    expect(githubIssuesInject).not.toContain('autopilotWebContributions')
+    expect(changesGitHubIssuesBinding(githubSettings, { ...githubSettings, repositoryId: '987654322' })).toBe(true)
+    expect(changesGitHubIssuesBinding(githubSettings, { ...githubSettings, pageSize: 50 })).toBe(false)
+  })
+
+  it('fails closed when a durable GitHub Issues binding changes without Admission ownership', async () => {
+    const { ctx } = await boot()
+
+    await expect(ctx.settings.update('dsh-autopilot-github-issues', { repositoryId: '987654322' })).rejects.toThrow(
+      /Admission.*unavailable/i,
+    )
+  })
+
   it('builds complete admission evidence through exact MCP tools without outbound credentials', async () => {
     const { ctx, credentials, calls } = await boot()
 

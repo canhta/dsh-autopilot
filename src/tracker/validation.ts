@@ -48,3 +48,14 @@ export const candidatePageSchema = z.object({
 export const ingressDeliverySchema = z.object({
   deliveryId: z.string().min(1).max(512).regex(ID_PATTERN),
 })
+
+export const outboundReceiptSchema = z.object({
+  receiptId: z.string().min(1).max(512),
+  receivedAt: z.iso.datetime({ offset: true }),
+})
+
+export const deliveryObservationSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('missing') }),
+  z.object({ kind: z.literal('delivered'), receipt: outboundReceiptSchema }),
+  z.object({ kind: z.literal('conflict'), reason: z.string().min(1).max(4096) }),
+])

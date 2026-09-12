@@ -18,11 +18,13 @@ Read the relevant GitHub issue and [documentation map](docs/README.md) before wo
 
 ## Integration and documentation
 
-Verify DSH interfaces against a recorded source version; conceptual spec interfaces are not existing APIs. Keep vendor logic in provider plugins and use the shared Host policy for Web commands. Read the relevant specs and source research through the documentation map.
+Verify DSH interfaces against the pinned dependency and current upstream source; conceptual spec interfaces are not existing APIs. Keep vendor logic in provider plugins and use the shared Host policy for Web commands. Read the relevant stable specs through the documentation map.
 
 When implementing or reviewing Host services, Client UI, lifecycle, persistence, public APIs or tests, follow [plugin engineering standards](docs/engineering.md). They adapt DSH's practices to this external plugin; upstream monorepo conventions do not automatically become this repository's policy.
 
-Each rule has one documentation owner. Keep reusable behavior in specs and dated source observations in research; record work progress, open questions, review findings and test results on GitHub. Never commit credentials, live ticket content, runtime worktrees or execution transcripts. Report only verification actually performed.
+Each rule has one public documentation owner. Keep reusable behavior in specs; record work progress, open questions, review findings and test results on GitHub. Never commit credentials, live ticket content, runtime worktrees or execution transcripts. Report only verification actually performed.
+
+Local upstream research lives in `docs/research/`. Agents may read and update it to verify DSH behavior, but it is intentionally excluded from Git and npm and public tracked documents must not link to it. Do not delete this directory merely because Git reports it as ignored. Before shipping a durable fact learned there, record the cited upstream version in the owning spec, ADR or GitHub issue so a clean checkout remains self-contained. If the local directory is absent, inspect the pinned dependency and current upstream source directly.
 
 ## Agent skills
 

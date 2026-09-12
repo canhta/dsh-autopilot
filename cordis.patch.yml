@@ -1,7 +1,13 @@
 - insert:
     - id: autopilot
-      name: dsh-autopilot
+      name: "@canhta/dsh-autopilot"
     - id: autopilot-jira
-      name: dsh-autopilot/jira
+      name: "@canhta/dsh-autopilot/jira"
     - id: autopilot-github-issues
-      name: dsh-autopilot/github-issues
+      name: "@canhta/dsh-autopilot/github-issues"
+    - id: autopilot-github-code-host
+      name: "@canhta/dsh-autopilot/github-code-host"
+    - id: autopilot-webhook-notification
+      name: "@canhta/dsh-autopilot/webhook-notification"
+    - id: autopilot-ntfy-notification
+      name: "@canhta/dsh-autopilot/ntfy-notification"

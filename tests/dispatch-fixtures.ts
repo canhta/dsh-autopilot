@@ -11,8 +11,13 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import { afterEach, expect } from 'vitest'
 import { Admission, type PausedActiveRun } from '../src/admission.js'
+import { CodeHost, codeHostBindingId, codeHostProviderId, codeHostRepositoryId } from '../src/code-host.js'
 import { AutopilotConfig } from '../src/config.js'
-import { Dispatch, FIXTURE_PROVIDER } from '../src/dispatch.js'
+import { Delivery } from '../src/delivery.js'
+import { Dispatch } from '../src/dispatch.js'
+import { Notifications } from '../src/notification.js'
+import { AutopilotOperations, PullRequestDispositionRegistry, RuntimeOwner } from '../src/operations.js'
+import { Publication } from '../src/publication.js'
 import { createFixtureTrackerProvider } from '../src/testing.js'
 import {
   readinessGeneration,
@@ -22,18 +27,31 @@ import {
   trackerCommentId,
   trackerIssueId,
 } from '../src/tracker.js'
-import { disposeContext, fixtureExecutionSettings, mountExecutionHostServices } from './dsh-fixtures.js'
+import { Workflow } from '../src/workflow.js'
+import {
+  disposeContext,
+  FIXTURE_PROVIDER,
+  fixtureExecutionSettings,
+  mountExecutionHostServices,
+} from './dsh-fixtures.js'
 
 export const temporaryDirectories: string[] = []
 export const contexts: Context[] = []
+const admissionFibers = new WeakMap<Context, Awaited<ReturnType<Context['plugin']>>>()
+const operationsFibers = new WeakMap<Context, Awaited<ReturnType<Context['plugin']>>>()
+const publicationFibers = new WeakMap<Context, Awaited<ReturnType<Context['plugin']>>>()
+const deliveryFibers = new WeakMap<Context, Awaited<ReturnType<Context['plugin']>>>()
+const workflowFibers = new WeakMap<Context, Awaited<ReturnType<Context['plugin']>>>()
+const dispatchFibers = new WeakMap<Context, Awaited<ReturnType<Context['plugin']>>>()
 
 afterEach(async () => {
-  await Promise.all(contexts.splice(0).map(disposeContext))
+  await Promise.all(contexts.splice(0).map(disposeFixtureContext))
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })))
 })
 
 export class ControlledAdapter extends LlmAdapter {
   readonly requests: GenerateOptions[] = []
+  beforeResponse?: (response: number) => Promise<void>
   private response = 0
 
   constructor(
@@ -50,6 +68,7 @@ export class ControlledAdapter extends LlmAdapter {
     private readonly beforeFirstResponse?: () => Promise<void>,
     private readonly reportOnResume = false,
     private readonly firstUnapprovedTool?: string,
+    private readonly reportedGit?: () => { head: string; status: string },
   ) {
     super()
   }
@@ -61,6 +80,7 @@ export class ControlledAdapter extends LlmAdapter {
   async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.requests.push(options)
     this.response += 1
+    await this.beforeResponse?.(this.response)
     if (this.response === 1) await this.beforeFirstResponse?.()
 
     if (this.response === 1 && this.firstUnapprovedTool !== undefined) {
@@ -79,7 +99,7 @@ export class ControlledAdapter extends LlmAdapter {
       (this.reportOnResume && this.response === 3) ||
       (this.reportMode === 'multiple' && this.response === 2)
     ) {
-      const { head, status } = managedGitFrom(options)
+      const { head, status } = this.reportedGit?.() ?? managedGitFrom(options)
       const summary =
         this.reportMode === 'empty'
           ? ''
@@ -93,7 +113,17 @@ export class ControlledAdapter extends LlmAdapter {
         summary,
         evidence: this.reportMode === 'malformed' ? [1] : ['controlled-model', 'clean-worktree'],
       }
-      if (this.reportKind === 'verified') Object.assign(report, { gitHead: head, gitStatus: status })
+      if (this.reportKind === 'verified') {
+        Object.assign(report, {
+          gitHead: head,
+          gitStatus: status,
+          verification: [
+            { command: 'fixture verify', status: 'passed', summary: 'The controlled fixture check passed.' },
+          ],
+          pullRequestTitle: 'Exercise durable dispatch',
+          pullRequestBody: 'Implements the approved fixture behavior.',
+        })
+      }
       yield* this.toolResponse(`report-${String(this.response)}`, 'autopilot_report', report)
       return
     }
@@ -228,6 +258,8 @@ export async function bootFixture(
   root: string,
   adapter: ControlledAdapter,
   issues: readonly TrackerIssueSnapshot[] = [candidate()],
+  settingsOverrides: Record<string, unknown> = {},
+  options: { withExecutionLifecycle?: boolean; now?: () => number } = {},
 ): Promise<Context> {
   const repository = await createTargetRepository(root)
   const worktreeRoot = join(root, 'worktrees')
@@ -237,7 +269,7 @@ export async function bootFixture(
   const ctx = await mountExecutionHostServices(join(root, 'state.sqlite'), sessionRoot, {
     'dsh-autopilot': {
       trackerProvider: 'fixture',
-      ...fixtureExecutionSettings(repository, worktreeRoot),
+      ...fixtureExecutionSettings(repository, worktreeRoot, settingsOverrides),
     },
   })
   contexts.push(ctx)
@@ -245,10 +277,63 @@ export async function bootFixture(
   await ctx.plugin(Tracker)
   ctx.tracker.register(createFixtureTrackerProvider({ issues }))
   await ctx.plugin(AutopilotConfig)
-  await ctx.plugin(Admission)
-  await ctx.plugin(Dispatch)
+  await ctx.plugin(RuntimeOwner, { authoritativeStorePath: join(root, 'state.sqlite') })
+  admissionFibers.set(ctx, await ctx.plugin(Admission))
+  await ctx.plugin(PullRequestDispositionRegistry)
+  operationsFibers.set(
+    ctx,
+    await ctx.plugin(AutopilotOperations, options.now === undefined ? {} : { now: options.now }),
+  )
+  if (options.withExecutionLifecycle !== false) await mountExecutionLifecycle(ctx)
   await ctx.admission.reconcile({ source: 'manual' })
   return ctx
+}
+
+export async function mountExecutionLifecycle(ctx: Context): Promise<void> {
+  await ctx.plugin(CodeHost)
+  ctx.codeHost.registerBinding({
+    providerId: codeHostProviderId('fixture-code-host'),
+    bindingId: codeHostBindingId('fixture:code-host'),
+    repositoryId: codeHostRepositoryId('fixture:repository'),
+    repository: 'fixture/repository',
+  })
+  await ctx.plugin(Notifications)
+  publicationFibers.set(ctx, await ctx.plugin(Publication))
+  deliveryFibers.set(ctx, await ctx.plugin(Delivery))
+  workflowFibers.set(ctx, await ctx.plugin(Workflow))
+  dispatchFibers.set(ctx, await ctx.plugin(Dispatch))
+}
+
+async function disposeFixtureContext(ctx: Context): Promise<void> {
+  for (const fiber of [
+    dispatchFibers.get(ctx),
+    workflowFibers.get(ctx),
+    deliveryFibers.get(ctx),
+    publicationFibers.get(ctx),
+    operationsFibers.get(ctx),
+  ]) {
+    await fiber?.dispose()
+  }
+  await disposeContext(ctx)
+}
+
+export function publicationFiber(ctx: Context) {
+  const fiber = publicationFibers.get(ctx)
+  if (fiber === undefined) throw new Error('fixture publication fiber is unavailable')
+  return fiber
+}
+
+export function deliveryFiber(ctx: Context) {
+  const fiber = deliveryFibers.get(ctx)
+  if (fiber === undefined) throw new Error('fixture delivery fiber is unavailable')
+  return fiber
+}
+
+export async function remountAdmission(ctx: Context): Promise<void> {
+  const current = admissionFibers.get(ctx)
+  if (current === undefined) throw new Error('fixture admission fiber is unavailable')
+  await current.dispose()
+  admissionFibers.set(ctx, await ctx.plugin(Admission))
 }
 
 export async function pauseAtSettlement(ctx: Context): Promise<PausedActiveRun> {

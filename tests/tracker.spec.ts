@@ -56,6 +56,30 @@ describe('tracker service seam', () => {
     })
   })
 
+  it('projects detached provider metadata for external Web consumers', async () => {
+    const ctx = new Context()
+    await ctx.plugin(Tracker)
+    const dispose = ctx.tracker.register(fixtureProvider())
+
+    const providers = ctx.tracker.providerRegistrations()
+    expect(providers).toEqual([
+      {
+        id: 'fixture',
+        displayName: 'Fixture tracker',
+        configurationNamespace: 'fixture-tracker',
+        capabilities: ['candidates', 'comments', 'dependencies', 'readiness', 'ingress', 'reports', 'projections'],
+      },
+    ])
+    const projected = providers[0]
+    expect(projected).toBeDefined()
+    if (projected === undefined) throw new Error('expected one provider')
+    ;(projected.capabilities as string[]).push('mutated')
+    expect(ctx.tracker.providerRegistrations()[0]?.capabilities).not.toContain('mutated')
+
+    await dispose()
+    expect(ctx.tracker.providerRegistrations()).toEqual([])
+  })
+
   it('verifies ingress through the selected provider generation', async () => {
     const ctx = new Context()
     await ctx.plugin(Tracker)

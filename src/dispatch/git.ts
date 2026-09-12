@@ -51,9 +51,16 @@ export async function inspectGit(
   return { baseHead, head, status }
 }
 
-export async function gitCommand(subprocess: SubprocessRuntime, cwd: string, args: readonly string[]): Promise<string> {
+export async function gitCommand(
+  subprocess: SubprocessRuntime,
+  cwd: string,
+  args: readonly string[],
+  callerSignal?: AbortSignal,
+): Promise<string> {
   const executable = await subprocess.resolveExecutable('git')
-  const signal = AbortSignal.timeout(GIT_TIMEOUT_MS)
+  callerSignal?.throwIfAborted()
+  const timeout = AbortSignal.timeout(GIT_TIMEOUT_MS)
+  const signal = callerSignal === undefined ? timeout : AbortSignal.any([timeout, callerSignal])
   const handle = subprocess.spawn({
     argv: [executable, ...args],
     cwd,
@@ -91,7 +98,8 @@ export async function gitCommand(subprocess: SubprocessRuntime, cwd: string, arg
   const stdout = handle.collected.stdout?.readFrom(0)
   const stderr = handle.collected.stderr?.readFrom(0)
   if (stdout?.lossy || stderr?.lossy) throw new Error(`git ${args[0] ?? ''} output exceeded its safety bound`)
-  if (signal.aborted) throw new Error(`git ${args.join(' ')} timed out`)
+  callerSignal?.throwIfAborted()
+  if (timeout.aborted) throw new Error(`git ${args.join(' ')} timed out`)
   if (outcome.exitCode !== 0) {
     const diagnostic = stderr?.text.trim() || stdout?.text.trim() || `exit ${String(outcome.exitCode)}`
     throw new Error(`git ${args.join(' ')} failed: ${diagnostic}`)

@@ -1,25 +1,30 @@
 import { type Context, Service } from '@deepseek-ai/cordis'
+import { GenerationRegistry, type ProviderGeneration } from '../providers/generation-registry.js'
 import {
   TRACKER_INTERFACE_VERSION,
   type TrackerCandidatePage,
+  type TrackerDeliveryObservation,
   type TrackerIngressDelivery,
   type TrackerIngressRequest,
+  type TrackerOutboundDelivery,
+  type TrackerOutboundReceipt,
   type TrackerProvider,
   TrackerProviderError,
   type TrackerProviderId,
   type TrackerProviderLifecycleEvent,
+  type TrackerProviderRegistration,
   type TrackerReader,
   type TrackerReadRequest,
+  type TrackerWriter,
   trackerCapabilities,
+  trackerWriteCapabilities,
 } from './model.js'
-import { candidatePageSchema, ingressDeliverySchema } from './validation.js'
-
-interface RegisteredProvider {
-  provider: TrackerProvider
-  controller: AbortController
-  active: Set<Promise<unknown>>
-  accepting: boolean
-}
+import {
+  candidatePageSchema,
+  deliveryObservationSchema,
+  ingressDeliverySchema,
+  outboundReceiptSchema,
+} from './validation.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -29,8 +34,11 @@ declare module '@deepseek-ai/cordis' {
 
 /** Provider registry and normalized read seam consumed by admission. */
 export class Tracker extends Service {
-  private readonly providers = new Map<TrackerProviderId, RegisteredProvider>()
   private readonly lifecycleObservers = new Set<(event: TrackerProviderLifecycleEvent) => void>()
+  private readonly providers = new GenerationRegistry<TrackerProviderId, TrackerProvider>(
+    (providerId) => this.notifyProviderLifecycle({ kind: 'available', providerId }),
+    (providerId) => this.notifyProviderLifecycle({ kind: 'unavailable', providerId }),
+  )
 
   constructor(ctx: Context) {
     super(ctx, 'tracker')
@@ -53,25 +61,16 @@ export class Tracker extends Service {
     if (missing.length > 0) {
       throw new TypeError(`tracker provider "${provider.id}" is missing capabilities: ${missing.join(', ')}`)
     }
-    const registered: RegisteredProvider = {
-      provider,
-      controller: new AbortController(),
-      active: new Set(),
-      accepting: true,
+    const writes = trackerWriteCapabilities.filter((capability) => provider.capabilities.includes(capability))
+    if (
+      writes.length > 0 &&
+      (writes.length !== trackerWriteCapabilities.length ||
+        provider.reconcileDelivery === undefined ||
+        provider.deliver === undefined)
+    ) {
+      throw new TypeError(`tracker provider "${provider.id}" must implement reports and projections together`)
     }
-    this.providers.set(provider.id, registered)
-    this.notifyProviderLifecycle({ kind: 'available', providerId: provider.id })
-
-    return async () => {
-      if (this.providers.get(provider.id) !== registered) return
-      registered.accepting = false
-      registered.controller.abort()
-      await Promise.allSettled(registered.active)
-      if (this.providers.get(provider.id) === registered) {
-        this.providers.delete(provider.id)
-        this.notifyProviderLifecycle({ kind: 'unavailable', providerId: provider.id })
-      }
-    }
+    return this.providers.register(provider.id, provider)
   }
 
   /**
@@ -83,6 +82,19 @@ export class Tracker extends Service {
     return () => {
       this.lifecycleObservers.delete(observer)
     }
+  }
+
+  /** Return stable, secret-free metadata for every currently accepting provider generation. */
+  providerRegistrations(): readonly TrackerProviderRegistration[] {
+    return [...this.providers.values()]
+      .filter((registered) => registered.accepting)
+      .map(({ provider }) => ({
+        id: provider.id,
+        displayName: provider.displayName,
+        configurationNamespace: provider.configurationNamespace,
+        capabilities: [...provider.capabilities],
+      }))
+      .sort((left, right) => left.displayName.localeCompare(right.displayName) || left.id.localeCompare(right.id))
   }
 
   /**
@@ -101,36 +113,46 @@ export class Tracker extends Service {
    * operations succeed. `withProvider` itself has no independent caller-cancellation input.
    */
   async withProvider<T>(id: TrackerProviderId, operation: (reader: TrackerReader) => Promise<T>): Promise<T> {
-    const registered = this.providers.get(id)
-    if (registered === undefined || !registered.accepting) {
-      throw new TrackerProviderError('provider-unavailable', `tracker provider "${id}" is unavailable`)
-    }
+    const registered = this.providers.require(
+      id,
+      () => new TrackerProviderError('provider-unavailable', `tracker provider "${id}" is unavailable`),
+    )
     const reader: TrackerReader = {
       readCandidates: (cursor, signal) => this.readProviderCandidates(registered, cursor, signal),
       verifyIngress: (request, signal) => this.verifyProviderIngress(registered, request, signal),
     }
-    let active: Promise<T>
-    try {
-      active = Promise.resolve(operation(reader))
-    } catch (error) {
-      active = Promise.reject(error)
+    return await this.providers.retain(registered, () => operation(reader))
+  }
+
+  /** Retain one write-capable provider generation while a durable delivery owner reconciles and applies its intent. */
+  async withWriter<T>(id: TrackerProviderId, operation: (writer: TrackerWriter) => Promise<T>): Promise<T> {
+    const registered = this.providers.require(
+      id,
+      () => new TrackerProviderError('provider-unavailable', `tracker provider "${id}" is unavailable`),
+    )
+    if (
+      !registered.accepting ||
+      registered.provider.reconcileDelivery === undefined ||
+      registered.provider.deliver === undefined ||
+      !trackerWriteCapabilities.every((capability) => registered.provider.capabilities.includes(capability))
+    ) {
+      throw new TrackerProviderError('unsupported-capability', `tracker provider "${id}" has no outbound delivery seam`)
     }
-    registered.active.add(active)
-    try {
-      return await active
-    } finally {
-      registered.active.delete(active)
+    const writer: TrackerWriter = {
+      reconcileDelivery: (delivery, signal) => this.reconcileProviderDelivery(registered, delivery, signal),
+      deliver: (delivery, signal) => this.deliverProviderIntent(registered, delivery, signal),
     }
+    return await this.providers.retain(registered, () => operation(writer))
   }
 
   private async readProviderCandidates(
-    registered: RegisteredProvider,
+    registered: ProviderGeneration<TrackerProvider>,
     cursor?: string,
     callerSignal?: AbortSignal,
   ): Promise<TrackerCandidatePage> {
     callerSignal?.throwIfAborted()
     const request: TrackerReadRequest = {
-      signal: this.combinedSignal(registered, callerSignal),
+      signal: this.providers.signal(registered, callerSignal),
       ...(cursor === undefined ? {} : { cursor }),
     }
     let page: TrackerCandidatePage
@@ -171,7 +193,7 @@ export class Tracker extends Service {
   }
 
   private async verifyProviderIngress(
-    registered: RegisteredProvider,
+    registered: ProviderGeneration<TrackerProvider>,
     request: TrackerIngressRequest,
     callerSignal?: AbortSignal,
   ): Promise<TrackerIngressDelivery> {
@@ -182,7 +204,7 @@ export class Tracker extends Service {
         method: request.method,
         headers: request.headers.map((header) => ({ ...header })),
         body: request.body.slice(),
-        signal: this.combinedSignal(registered, callerSignal),
+        signal: this.providers.signal(registered, callerSignal),
       })
     } catch (error) {
       if (!registered.accepting) {
@@ -215,10 +237,70 @@ export class Tracker extends Service {
     return parsed.data
   }
 
-  private combinedSignal(registered: RegisteredProvider, callerSignal?: AbortSignal): AbortSignal {
-    return callerSignal === undefined
-      ? registered.controller.signal
-      : AbortSignal.any([registered.controller.signal, callerSignal])
+  private async reconcileProviderDelivery(
+    registered: ProviderGeneration<TrackerProvider>,
+    delivery: TrackerOutboundDelivery,
+    callerSignal?: AbortSignal,
+  ): Promise<TrackerDeliveryObservation> {
+    const value = await this.invokeWrite(registered, 'reconcileDelivery', delivery, callerSignal)
+    const parsed = deliveryObservationSchema.safeParse(value)
+    if (!parsed.success) {
+      throw new TrackerProviderError('invalid-response', 'tracker provider returned an invalid delivery observation')
+    }
+    return parsed.data
+  }
+
+  private async deliverProviderIntent(
+    registered: ProviderGeneration<TrackerProvider>,
+    delivery: TrackerOutboundDelivery,
+    callerSignal?: AbortSignal,
+  ): Promise<TrackerOutboundReceipt> {
+    const value = await this.invokeWrite(registered, 'deliver', delivery, callerSignal)
+    const parsed = outboundReceiptSchema.safeParse(value)
+    if (!parsed.success)
+      throw new TrackerProviderError('invalid-response', 'tracker provider returned an invalid receipt')
+    return parsed.data
+  }
+
+  private async invokeWrite(
+    registered: ProviderGeneration<TrackerProvider>,
+    operation: 'reconcileDelivery' | 'deliver',
+    delivery: TrackerOutboundDelivery,
+    callerSignal?: AbortSignal,
+  ): Promise<unknown> {
+    callerSignal?.throwIfAborted()
+    try {
+      const request = {
+        delivery: structuredClone(delivery),
+        signal: this.providers.signal(registered, callerSignal),
+      }
+      const value =
+        operation === 'reconcileDelivery'
+          ? await registered.provider.reconcileDelivery?.(request)
+          : await registered.provider.deliver?.(request)
+      if (value === undefined) throw new TrackerProviderError('unsupported-capability', 'tracker write is unavailable')
+      if (!registered.accepting) {
+        throw new TrackerProviderError(
+          operation === 'deliver' ? 'ambiguous-acknowledgement' : 'provider-unavailable',
+          `tracker provider "${registered.provider.id}" was withdrawn`,
+        )
+      }
+      callerSignal?.throwIfAborted()
+      return value
+    } catch (error) {
+      if (!registered.accepting) {
+        throw new TrackerProviderError(
+          operation === 'deliver' ? 'ambiguous-acknowledgement' : 'provider-unavailable',
+          `tracker provider "${registered.provider.id}" was withdrawn`,
+        )
+      }
+      callerSignal?.throwIfAborted()
+      if (error instanceof TrackerProviderError) throw error
+      throw new TrackerProviderError(
+        'transient',
+        `tracker provider "${registered.provider.id}" failed outbound delivery`,
+      )
+    }
   }
 
   private notifyProviderLifecycle(event: TrackerProviderLifecycleEvent): void {

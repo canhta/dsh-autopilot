@@ -1,8 +1,9 @@
 import { createHmac } from 'node:crypto'
 import type { Context } from '@deepseek-ai/cordis'
 import { afterEach, describe, expect, it } from 'vitest'
-import { registerJiraProvider } from '../src/jira.js'
-import { trackerProviderId } from '../src/tracker.js'
+import { inject as jiraInject, registerJiraProvider } from '../src/jira.js'
+import { changesJiraBinding } from '../src/providers/jira/settings.js'
+import { readinessGeneration, type TrackerOutboundDelivery, trackerProviderId } from '../src/tracker.js'
 import { providerTestContext, registerJsonMcpTool } from './mcp-provider-fixtures.js'
 
 const webhookSecretRef = 'DSH_AUTOPILOT_JIRA_WEBHOOK_SECRET'
@@ -22,6 +23,14 @@ const jiraSettings = {
   dependencyDirection: 'inward' as const,
   automationAccountIds: ['bot-account'],
   trustedHumanAccountIds: ['human-account'],
+  queuedLabel: 'agent-queued',
+  implementingLabel: 'agent-implementing',
+  pausedLabel: 'agent-paused',
+  blockedLabel: 'agent-blocked',
+  failedLabel: 'agent-failed',
+  completedLabel: 'agent-completed',
+  reviewTransitionId: '31',
+  reviewStatusId: 'review',
 }
 
 const contexts = new Set<Context>()
@@ -39,6 +48,9 @@ async function boot(
   identityAccountId = 'integration-account',
   commentStartAt = 0,
   identityRequiresArgument = false,
+  withdrawCommentToolAfterWrite = false,
+  malformedCommentReceipt = false,
+  deliveredCommentAuthor = 'integration-account',
 ) {
   const host = await providerTestContext(
     { 'dsh-autopilot-jira': jiraSettings },
@@ -46,6 +58,10 @@ async function boot(
   )
   contexts.add(host.ctx)
   const calls: Array<{ tool: string; args: Record<string, unknown> }> = []
+  let deliveredComment: { id: string; body: string } | undefined
+  let currentIdentityAccountId = identityAccountId
+  let writableIssueId = '10001'
+  let writableProjectId = '10000'
   registerJsonMcpTool(
     host.ctx,
     'atlassian',
@@ -53,7 +69,7 @@ async function boot(
     identityRequiresArgument ? ['unexpected'] : [],
     (args) => {
       calls.push({ tool: 'identity', args })
-      return { account_id: identityAccountId }
+      return { account_id: currentIdentityAccountId }
     },
   )
   registerJsonMcpTool(
@@ -93,18 +109,29 @@ async function boot(
     ['cloudId', 'issueIdOrKey'],
     (args) => {
       calls.push({ tool: 'comments', args })
+      const comments = [
+        {
+          id: '20001',
+          author: { accountId: 'human-account' },
+          updated: '2026-09-11T00:01:00.000Z',
+          body: '# Agent Brief\ndsh-autopilot:brief:v1\n## Objective\nShip it.\n',
+        },
+        ...(deliveredComment === undefined
+          ? []
+          : [
+              {
+                id: deliveredComment.id,
+                author: { accountId: deliveredCommentAuthor },
+                updated: '2026-09-11T00:04:00.000Z',
+                body: deliveredComment.body,
+              },
+            ]),
+      ]
       return {
         startAt: commentStartAt,
         maxResults: 50,
-        total: 1,
-        comments: [
-          {
-            id: '20001',
-            author: { accountId: 'human-account' },
-            updated: '2026-09-11T00:01:00.000Z',
-            body: '# Agent Brief\ndsh-autopilot:brief:v1\n## Objective\nShip it.\n',
-          },
-        ],
+        total: comments.length,
+        comments,
       }
     },
     mcpProperties('startAt', 'maxResults'),
@@ -134,9 +161,74 @@ async function boot(
       mcpProperties('startAt', 'maxResults'),
     )
   }
+  registerJsonMcpTool(
+    host.ctx,
+    'atlassian',
+    'getJiraIssue',
+    ['cloudId', 'issueIdOrKey'],
+    () => ({
+      id: writableIssueId,
+      key: 'AUTO-1',
+      fields: {
+        summary: 'Use Atlassian MCP',
+        priority: { id: 'high' },
+        labels: ['ready-for-agent', 'customer-label'],
+        project: { id: writableProjectId },
+        issuelinks: [],
+        status: { id: 'todo' },
+        updated: '2026-09-11T00:03:00.000Z',
+      },
+    }),
+    mcpProperties('fields'),
+  )
+  let disposeCommentTool = (): void => undefined
+  disposeCommentTool = registerJsonMcpTool(
+    host.ctx,
+    'atlassian',
+    'addOrEditJiraIssueComment',
+    ['cloudId', 'issueIdOrKey', 'commentBody'],
+    (args) => {
+      calls.push({ tool: 'addOrEditJiraIssueComment', args })
+      deliveredComment = { id: '40001', body: String(args.commentBody) }
+      if (withdrawCommentToolAfterWrite) disposeCommentTool()
+      return malformedCommentReceipt ? { id: 40001 } : { id: '40001' }
+    },
+  )
+  registerJsonMcpTool(
+    host.ctx,
+    'atlassian',
+    'editJiraIssue',
+    ['cloudId', 'issueIdOrKey', 'fields'],
+    (args) => {
+      calls.push({ tool: 'editJiraIssue', args })
+      return {}
+    },
+    { fields: { type: 'object' } },
+  )
+  registerJsonMcpTool(
+    host.ctx,
+    'atlassian',
+    'transitionJiraIssue',
+    ['cloudId', 'issueIdOrKey', 'transition'],
+    (args) => {
+      calls.push({ tool: 'transitionJiraIssue', args })
+      return {}
+    },
+    { transition: { type: 'object' } },
+  )
   const stop = await registerJiraProvider(host.ctx)
   stops.add(stop)
-  return { ...host, calls }
+  return {
+    ...host,
+    calls,
+    setIdentityAccountId(value: string) {
+      currentIdentityAccountId = value
+    },
+    setWritableIssueIdentity(issueId: string, projectId: string) {
+      writableIssueId = issueId
+      writableProjectId = projectId
+    },
+  }
 }
 
 function mcpProperties(...names: string[]): Record<string, unknown> {
@@ -153,6 +245,20 @@ function mcpProperties(...names: string[]): Record<string, unknown> {
 }
 
 describe('Jira MCP tracker provider', () => {
+  it('fences only settings that can reinterpret durable Jira work', () => {
+    expect(jiraInject).not.toContain('autopilotWebContributions')
+    expect(changesJiraBinding(jiraSettings, { ...jiraSettings, projectId: '10001' })).toBe(true)
+    expect(changesJiraBinding(jiraSettings, { ...jiraSettings, pageSize: 25 })).toBe(false)
+  })
+
+  it('fails closed when a durable Jira binding changes without Admission ownership', async () => {
+    const { ctx } = await boot()
+
+    await expect(ctx.settings.update('dsh-autopilot-jira', { projectId: '10001' })).rejects.toThrow(
+      /Admission.*unavailable/i,
+    )
+  })
+
   it('normalizes complete admission evidence through Atlassian MCP without a second auth flow', async () => {
     const { ctx, credentials, calls } = await boot()
 
@@ -226,5 +332,138 @@ describe('Jira MCP tracker provider', () => {
       ),
     ).resolves.toMatchObject({ deliveryId: expect.stringMatching(/^jira:/) })
     expect(credentials.resolveCount).toBe(1)
+  })
+
+  it('reconciles report markers and projects only configured labels plus the review transition', async () => {
+    const { ctx, calls } = await boot()
+    const issue = (await ctx.tracker.readCandidates(trackerProviderId('jira'))).issues[0]
+    if (issue === undefined) throw new Error('fixture issue is missing')
+    const report: TrackerOutboundDelivery = {
+      kind: 'report',
+      deliveryId: 'tracker:report-1',
+      eventId: 'event-1',
+      bindingId: issue.bindingId,
+      issueId: issue.issueId,
+      displayKey: issue.displayKey,
+      body: 'Generated by dsh-autopilot.\n<!-- dsh-autopilot:event:event-1 -->',
+    }
+    const projection: TrackerOutboundDelivery = {
+      kind: 'projection',
+      deliveryId: 'tracker:projection-1',
+      eventId: 'event-1',
+      bindingId: issue.bindingId,
+      issueId: issue.issueId,
+      displayKey: issue.displayKey,
+      readinessGeneration: readinessGeneration('jira:30001'),
+      runRevision: 7,
+      desiredState: 'completed',
+    }
+
+    await ctx.tracker.withWriter(trackerProviderId('jira'), async (writer) => {
+      await expect(writer.reconcileDelivery(report)).resolves.toEqual({ kind: 'missing' })
+      await expect(writer.deliver(report)).resolves.toMatchObject({ receiptId: 'jira:comment:40001' })
+      await expect(writer.deliver(projection)).resolves.toMatchObject({
+        receiptId: 'jira:projection:tracker:projection-1',
+      })
+    })
+
+    const edit = calls.find(({ tool }) => tool === 'editJiraIssue')
+    expect(edit?.args).toMatchObject({
+      issueIdOrKey: 'AUTO-1',
+      fields: { labels: ['agent-completed', 'customer-label'] },
+    })
+    expect(calls.find(({ tool }) => tool === 'transitionJiraIssue')?.args).toMatchObject({
+      transition: { id: '31' },
+    })
+  })
+
+  it('revalidates MCP identity and the durable issue target before every outbound Jira mutation', async () => {
+    const fixture = await boot()
+    const issue = (await fixture.ctx.tracker.readCandidates(trackerProviderId('jira'))).issues[0]
+    if (issue === undefined) throw new Error('fixture issue is missing')
+    const report: TrackerOutboundDelivery = {
+      kind: 'report',
+      deliveryId: 'tracker:bound-report',
+      eventId: 'event-bound',
+      bindingId: issue.bindingId,
+      issueId: issue.issueId,
+      displayKey: issue.displayKey,
+      body: 'Generated by dsh-autopilot.\n<!-- dsh-autopilot:event:event-bound -->',
+    }
+
+    fixture.setIdentityAccountId('human-account')
+    await expect(
+      fixture.ctx.tracker.withWriter(trackerProviderId('jira'), (writer) => writer.deliver(report)),
+    ).rejects.toMatchObject({ code: 'provider-unavailable' })
+
+    fixture.setIdentityAccountId('integration-account')
+    fixture.setWritableIssueIdentity(issue.issueId, 'different-project')
+    await expect(
+      fixture.ctx.tracker.withWriter(trackerProviderId('jira'), (writer) => writer.deliver(report)),
+    ).rejects.toMatchObject({ code: 'conflict' })
+    expect(fixture.calls.filter(({ tool }) => tool === 'addOrEditJiraIssueComment')).toHaveLength(0)
+  })
+
+  it('rejects a recovered Jira report marker written by another account', async () => {
+    const { ctx } = await boot(true, 'integration-account', 0, false, false, false, 'human-account')
+    const issue = (await ctx.tracker.readCandidates(trackerProviderId('jira'))).issues[0]
+    if (issue === undefined) throw new Error('fixture issue is missing')
+    const report: TrackerOutboundDelivery = {
+      kind: 'report',
+      deliveryId: 'tracker:foreign-marker',
+      eventId: 'event-foreign-marker',
+      bindingId: issue.bindingId,
+      issueId: issue.issueId,
+      displayKey: issue.displayKey,
+      body: 'Generated by dsh-autopilot.\n<!-- dsh-autopilot:event:event-foreign-marker -->',
+    }
+
+    await ctx.tracker.withWriter(trackerProviderId('jira'), (writer) => writer.deliver(report))
+    await expect(
+      ctx.tracker.withWriter(trackerProviderId('jira'), (writer) => writer.reconcileDelivery(report)),
+    ).resolves.toMatchObject({ kind: 'conflict' })
+  })
+
+  it('treats MCP tool withdrawal after a tracker mutation as an ambiguous acknowledgement', async () => {
+    const { ctx } = await boot(true, 'integration-account', 0, false, true)
+    const issue = (await ctx.tracker.readCandidates(trackerProviderId('jira'))).issues[0]
+    if (issue === undefined) throw new Error('fixture issue is missing')
+    const report: TrackerOutboundDelivery = {
+      kind: 'report',
+      deliveryId: 'tracker:withdrawal-report',
+      eventId: 'event-withdrawal',
+      bindingId: issue.bindingId,
+      issueId: issue.issueId,
+      displayKey: issue.displayKey,
+      body: 'Generated by dsh-autopilot.\n<!-- dsh-autopilot:event:event-withdrawal -->',
+    }
+
+    await expect(
+      ctx.tracker.withWriter(trackerProviderId('jira'), (writer) => writer.deliver(report)),
+    ).rejects.toMatchObject({ code: 'ambiguous-acknowledgement' })
+  })
+
+  it('reconciles a Jira comment after its successful mutation returns a malformed receipt', async () => {
+    const { ctx, calls } = await boot(true, 'integration-account', 0, false, false, true)
+    const issue = (await ctx.tracker.readCandidates(trackerProviderId('jira'))).issues[0]
+    if (issue === undefined) throw new Error('fixture issue is missing')
+    const report: TrackerOutboundDelivery = {
+      kind: 'report',
+      deliveryId: 'tracker:malformed-report',
+      eventId: 'event-malformed',
+      bindingId: issue.bindingId,
+      issueId: issue.issueId,
+      displayKey: issue.displayKey,
+      body: 'Generated by dsh-autopilot.\n<!-- dsh-autopilot:event:event-malformed -->',
+    }
+
+    await ctx.tracker.withWriter(trackerProviderId('jira'), async (writer) => {
+      await expect(writer.deliver(report)).rejects.toMatchObject({ code: 'ambiguous-acknowledgement' })
+      await expect(writer.reconcileDelivery(report)).resolves.toMatchObject({
+        kind: 'delivered',
+        receipt: { receiptId: 'jira:comment:40001' },
+      })
+    })
+    expect(calls.filter(({ tool }) => tool === 'addOrEditJiraIssueComment')).toHaveLength(1)
   })
 })

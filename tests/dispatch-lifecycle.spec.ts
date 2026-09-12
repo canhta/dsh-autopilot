@@ -22,6 +22,10 @@ describe('durable fixture dispatch: lifecycle and pause', () => {
     const dispatched = ctx.dispatch.dispatchNext()
     await requestStarted.promise
 
+    await expect(ctx.settings.update('dsh-autopilot', { codeHostProvider: 'replacement' })).rejects.toThrow(
+      /code-host configuration cannot change.*unfinished run/i,
+    )
+
     const disabled = ctx.dispatch.disableScheduler()
     await expect.poll(() => ctx.admission.snapshot().runs[0]?.state).toBe('pausing')
     expect(ctx.admission.snapshot()).toMatchObject({
