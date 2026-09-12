@@ -1,0 +1,278 @@
+{
+  "name": "@canhta/dsh-autopilot",
+  "version": "0.1.0-alpha.1",
+  "description": "Turn approved tracker tickets into review-ready pull requests with DeepSeek Harness.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "types": "./lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./admission": {
+      "types": "./lib/admission.d.ts",
+      "default": "./lib/admission.js"
+    },
+    "./code-host": {
+      "types": "./lib/code-host.d.ts",
+      "default": "./lib/code-host.js"
+    },
+    "./dispatch": {
+      "types": "./lib/dispatch.d.ts",
+      "default": "./lib/dispatch.js"
+    },
+    "./config": {
+      "types": "./lib/config.d.ts",
+      "default": "./lib/config.js"
+    },
+    "./delivery": {
+      "types": "./lib/delivery.d.ts",
+      "default": "./lib/delivery.js"
+    },
+    "./github-code-host": {
+      "types": "./lib/github-code-host.d.ts",
+      "default": "./lib/github-code-host.js"
+    },
+    "./github-issues": {
+      "types": "./lib/github-issues.d.ts",
+      "default": "./lib/github-issues.js"
+    },
+    "./jira": {
+      "types": "./lib/jira.d.ts",
+      "default": "./lib/jira.js"
+    },
+    "./notification": {
+      "types": "./lib/notification.d.ts",
+      "default": "./lib/notification.js"
+    },
+    "./ntfy-notification": {
+      "types": "./lib/ntfy-notification.d.ts",
+      "default": "./lib/ntfy-notification.js"
+    },
+    "./operations": {
+      "types": "./lib/operations.d.ts",
+      "default": "./lib/operations.js"
+    },
+    "./publication": {
+      "types": "./lib/publication.d.ts",
+      "default": "./lib/publication.js"
+    },
+    "./reconciliation": {
+      "types": "./lib/reconciliation.d.ts",
+      "default": "./lib/reconciliation.js"
+    },
+    "./tracker": {
+      "types": "./lib/tracker.d.ts",
+      "default": "./lib/tracker.js"
+    },
+    "./workflow": {
+      "types": "./lib/workflow.d.ts",
+      "default": "./lib/workflow.js"
+    },
+    "./webhook-notification": {
+      "types": "./lib/webhook-notification.d.ts",
+      "default": "./lib/webhook-notification.js"
+    },
+    "./web": {
+      "types": "./lib/web.d.ts",
+      "default": "./lib/web.js"
+    },
+    "./client": {
+      "types": "./lib/client-types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./typert": {
+      "types": "./lib/typert.d.ts",
+      "default": "./lib/typert.js"
+    },
+    "./remote": {
+      "types": "./lib/remote.d.ts",
+      "default": "./lib/remote.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/",
+    "deploy/",
+    "docs/adr/",
+    "docs/agents/",
+    "docs/assets/",
+    "docs/specs/",
+    "docs/CONTRIBUTING.md",
+    "docs/README.md",
+    "docs/deployment.md",
+    "docs/engineering.md",
+    "AGENTS.md",
+    "CONTEXT.md",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "clean": "node --eval \"require('node:fs').rmSync('lib', { recursive: true, force: true })\"",
+    "build": "pnpm run clean && tsc -p tsconfig.build.json && tsc -p tsconfig.client.json && tsdown",
+    "format": "biome check --write .",
+    "lint": "biome ci .",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.client.json --noEmit",
+    "test": "vitest run",
+    "check": "pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build",
+    "hooks:install": "lefthook install",
+    "verify:package": "node scripts/verify-package.mjs",
+    "prepare": "pnpm run build",
+    "prepack": "pnpm run lint && pnpm run typecheck && pnpm run test"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/canhta/dsh-autopilot.git"
+  },
+  "bugs": {
+    "url": "https://github.com/canhta/dsh-autopilot/issues"
+  },
+  "homepage": "https://github.com/canhta/dsh-autopilot#readme",
+  "keywords": [
+    "coding-agent",
+    "deepseek-harness",
+    "dsh-plugin",
+    "issue-tracker",
+    "pull-request-automation",
+    "self-hosted",
+    "workflow-automation"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-api-gateway",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-primitives",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-agent-default-model": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-agent-presets": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-permission-presets": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-credentials": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-scope": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-session": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-session-persistence": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-storage": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-subprocess": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-workspace": "^0.1.5-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "zod": "^4.6.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-agent-default-model": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-agent-presets": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-permission-presets": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-credentials": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-scope": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-session": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-session-persistence": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-settings": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-storage": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-subprocess": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "^0.1.5-rc.1",
+    "@deepseek-ai/dsh-workspace": "^0.1.5-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.1-rc.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "latest",
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-agent": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-agent-default-model": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-agent-loop": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-agent-presets": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-permission-presets": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-api-gateway": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-api-remotes": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-api-settings-controller": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-connection": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-locale": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-store": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-layout": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-primitives": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-renderer": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-http-proxy": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-llm": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-scope": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-session": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-session-persistence": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-session-persistence-jsonl": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-session-projection": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-storage": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-storage-domain": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-storage-sqlite": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-subprocess": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-subprocess-local": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-tools": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-typert-protocol": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-workspace": "0.1.5-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@shikijs/langs": "^4.3.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^22.20.2",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.1",
+    "anser": "^2.3.5",
+    "clsx": "^2.0.0",
+    "immer": "^10.1.1",
+    "jsdom": "^30.0.1",
+    "katex": "^0.16.47",
+    "lefthook": "latest",
+    "lightningcss": "^1.33.0",
+    "mdast-util-from-markdown": "^2.0.3",
+    "mdast-util-gfm": "^3.1.0",
+    "mdast-util-math": "^3.0.0",
+    "micromark-core-commonmark": "^2.0.3",
+    "micromark-extension-gfm": "^3.0.0",
+    "micromark-extension-math": "^3.1.0",
+    "micromark-factory-space": "^2.0.1",
+    "micromark-util-character": "^2.1.1",
+    "micromark-util-classify-character": "^2.0.1",
+    "micromark-util-sanitize-uri": "^2.0.1",
+    "micromark-util-symbol": "^2.0.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "shiki": "^4.3.1",
+    "tsdown": "^0.23.0",
+    "typescript": "latest",
+    "vitest": "latest",
+    "zod": "^4.6.1",
+    "zustand": "~4.4.7"
+  }
+}

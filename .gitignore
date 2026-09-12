@@ -1,0 +1,11 @@
+node_modules/
+lib/
+dist/
+coverage/
+.env
+.env.*
+!.env.example
+.DS_Store
+.autopilot/
+.artifacts/
+docs/research/
