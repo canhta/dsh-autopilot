@@ -133,6 +133,7 @@ export function AutopilotSettingsView({
       <ProviderConnectionSection
         providers={host?.providers ?? []}
         selectedProvider={draft.trackerProvider}
+        codeHostProviders={host?.codeHostProviders ?? []}
         codeHostProvider={draft.codeHostProvider}
         allowWorkflowChanges={draft.allowWorkflowChanges}
         credentials={credentials}

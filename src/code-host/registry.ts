@@ -7,6 +7,7 @@ import {
   type CodeHostProvider,
   CodeHostProviderError,
   type CodeHostProviderId,
+  type CodeHostProviderRegistration,
   type CodeHostProviderRequest,
   type CodeHostPublication,
   type CodeHostPublisher,
@@ -42,6 +43,19 @@ export class CodeHost extends Service {
       throw new TypeError(`code-host provider "${provider.id}" is missing capabilities: ${missing.join(', ')}`)
     }
     return this.providers.register(provider.id, provider)
+  }
+
+  /** Return stable, secret-free metadata for every currently accepting provider generation. */
+  providerRegistrations(): readonly CodeHostProviderRegistration[] {
+    return [...this.providers.values()]
+      .filter((registered) => registered.accepting)
+      .map(({ provider }) => ({
+        id: provider.id,
+        displayName: provider.displayName,
+        configurationNamespace: provider.configurationNamespace,
+        capabilities: [...provider.capabilities],
+      }))
+      .sort((left, right) => left.displayName.localeCompare(right.displayName) || left.id.localeCompare(right.id))
   }
 
   /** Register the single provider-owned target snapshot used for future execution claims. */

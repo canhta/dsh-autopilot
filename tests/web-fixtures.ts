@@ -60,6 +60,7 @@ export function operationsFixture(overrides: Partial<OperationsSnapshot> = {}): 
         },
       },
     ],
+    codeHostProviders: [],
     runs: { items: [run], total: 1, offset: 0, limit: 50 },
     budget: { deploymentCap: 100_000, settled: 12_000, reserved: 8_000, remaining: 80_000, usageUncertain: false },
     schedule: { timezone: 'Asia/Ho_Chi_Minh', reconcileIntervalSeconds: 300 },

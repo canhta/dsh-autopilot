@@ -107,6 +107,14 @@ export interface CodeHostProvider {
   createPullRequest(request: CodeHostProviderRequest): Promise<PullRequestReceipt>
 }
 
+/** Stable, secret-free metadata for one currently accepting code-host provider generation. */
+export interface CodeHostProviderRegistration {
+  readonly id: CodeHostProviderId
+  readonly displayName: string
+  readonly configurationNamespace: string
+  readonly capabilities: readonly CodeHostCapability[]
+}
+
 export interface CodeHostPublisher {
   reconcile(publication: CodeHostPublication, signal?: AbortSignal): Promise<CodeHostReconciliation>
   createBranch(publication: CodeHostPublication, signal?: AbortSignal): Promise<void>

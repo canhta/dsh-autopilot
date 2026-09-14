@@ -78,10 +78,12 @@ export const zh = {
   removeWorktree: '移除工作树',
   settingsIntro: '选择已安装的工单绑定和运维限制。提供方凭据仍由 DSH MCP 连接管理。',
   providerSection: '提供方与项目',
+  codeHostProviderSection: '代码托管提供方',
   policySection: '计划与容量',
   budgetSection: '预算',
   provider: '工单提供方',
   codeHostProviderReference: '代码托管提供方引用',
+  codeHostConfigureHint: '请在上方填写代码托管提供方引用（例如 “github”）以完成绑定。',
   allowWorkflowChanges: '允许提供方拥有的工作流文件更改',
   providerSettingsOwnership:
     '项目、绑定、仓库、映射值以及官方 MCP 服务器连接均保留在 DSH 设置中，而非此处。Autopilot 只保存要使用的 MCP 服务器名称，绝不会索取提供方令牌。',

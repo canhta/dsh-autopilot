@@ -230,6 +230,7 @@ export const operationsSnapshotSchema = z.object({
     changedAt: z.string().datetime(),
   }),
   providers: z.array(providerViewSchema),
+  codeHostProviders: z.array(providerViewSchema),
   runs: z.object({
     items: z.array(runSummarySchema),
     total: z.number().int().min(0),

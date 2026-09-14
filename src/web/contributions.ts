@@ -31,6 +31,7 @@ export class AutopilotWebContributions extends Service {
   private readonly deliveries = new Map<string, DeliveryViewContribution>()
   private readonly worktrees = new Map<string, WorktreeViewContribution>()
   private readonly providers = new Map<string, ProviderSetupContribution>()
+  private readonly codeHostProviders = new Map<string, ProviderSetupContribution>()
 
   constructor(ctx: Context) {
     super(ctx, 'autopilotWebContributions')
@@ -46,6 +47,10 @@ export class AutopilotWebContributions extends Service {
 
   registerProvider(contribution: ProviderSetupContribution): () => void {
     return registerUnique(this.providers, contribution.providerId, contribution)
+  }
+
+  registerCodeHostProvider(contribution: ProviderSetupContribution): () => void {
+    return registerUnique(this.codeHostProviders, contribution.providerId, contribution)
   }
 
   deliveriesFor(runId: RunId): DeliveryView[] {
@@ -72,6 +77,10 @@ export class AutopilotWebContributions extends Service {
 
   providerViews(): readonly ProviderSetupContribution[] {
     return [...this.providers.values()]
+  }
+
+  codeHostProviderViews(): readonly ProviderSetupContribution[] {
+    return [...this.codeHostProviders.values()]
   }
 
   availability(): { deliveries: boolean; worktrees: boolean } {

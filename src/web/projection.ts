@@ -1,4 +1,5 @@
 import type { AutopilotRun } from '../admission.js'
+import type { CodeHostProviderRegistration } from '../code-host.js'
 import type { TrackerProviderRegistration } from '../tracker.js'
 import type {
   OperationsQuery,
@@ -8,21 +9,27 @@ import type {
   RunSummaryView,
   TimelineEntryView,
 } from './contract.js'
-import type { AutopilotWebContributions } from './contributions.js'
+import type { AutopilotWebContributions, ProviderSetupContribution } from './contributions.js'
 
 export function providerNames(registrations: readonly TrackerProviderRegistration[]): ReadonlyMap<string, string> {
   return new Map(registrations.map((provider) => [provider.id, provider.displayName]))
 }
 
-export async function providerViews(
-  registrations: readonly TrackerProviderRegistration[],
+interface NamedRegistration {
+  readonly id: string
+  readonly displayName: string
+  readonly configurationNamespace: string
+}
+
+async function buildProviderViews(
+  registrations: readonly NamedRegistration[],
+  setups: readonly ProviderSetupContribution[],
   selectedId: string,
-  contributions: AutopilotWebContributions,
   signal?: AbortSignal,
 ): Promise<ProviderView[]> {
   const registeredIds = new Set(registrations.map(({ id }) => String(id)))
   const views: ProviderView[] = await Promise.all(
-    contributions.providerViews().map(async (provider) => ({
+    setups.map(async (provider) => ({
       id: provider.providerId,
       displayName: provider.displayName,
       configurationNamespace: provider.configurationNamespace,
@@ -41,7 +48,7 @@ export async function providerViews(
         availability: 'available',
         setup: { status: 'unavailable', reason: 'This provider does not publish a browser-safe setup view.' },
       })
-  if (!views.some(({ id }) => id === selectedId))
+  if (selectedId !== '' && !views.some(({ id }) => id === selectedId))
     views.unshift({
       id: selectedId,
       displayName: selectedId,
@@ -51,6 +58,24 @@ export async function providerViews(
       setup: { status: 'unavailable', reason: 'The selected provider is not installed in this DSH composition.' },
     })
   return views
+}
+
+export async function providerViews(
+  registrations: readonly TrackerProviderRegistration[],
+  selectedId: string,
+  contributions: AutopilotWebContributions,
+  signal?: AbortSignal,
+): Promise<ProviderView[]> {
+  return await buildProviderViews(registrations, contributions.providerViews(), selectedId, signal)
+}
+
+export async function codeHostProviderViews(
+  registrations: readonly CodeHostProviderRegistration[],
+  selectedId: string,
+  contributions: AutopilotWebContributions,
+  signal?: AbortSignal,
+): Promise<ProviderView[]> {
+  return await buildProviderViews(registrations, contributions.codeHostProviderViews(), selectedId, signal)
 }
 
 export function summaryOf(

@@ -10,6 +10,7 @@ type Provider = OperationsSnapshot['providers'][number]
 export function ProviderConnectionSection({
   providers,
   selectedProvider,
+  codeHostProviders,
   codeHostProvider,
   allowWorkflowChanges,
   credentials,
@@ -24,6 +25,7 @@ export function ProviderConnectionSection({
 }: {
   readonly providers: readonly Provider[]
   readonly selectedProvider: string
+  readonly codeHostProviders: readonly Provider[]
   readonly codeHostProvider: string
   readonly allowWorkflowChanges: boolean
   readonly credentials: Record<string, CredentialInfo> | undefined
@@ -40,6 +42,7 @@ export function ProviderConnectionSection({
   const testRequests = useRef(new Map<string, AbortController>())
   const codeHostProviderInputId = useId()
   const activeProvider = providers.find((provider) => provider.id === selectedProvider)
+  const activeCodeHostProvider = codeHostProviders.find((provider) => provider.id === codeHostProvider)
   useEffect(
     () => () => {
       for (const request of testRequests.current.values()) request.abort()
@@ -73,63 +76,85 @@ export function ProviderConnectionSection({
   }
 
   return (
-    <fieldset>
-      <legend>{t('providerSection')}</legend>
-      <label>
-        {t('provider')}
-        <select value={selectedProvider} onChange={(event) => onSelectProvider(event.currentTarget.value)}>
-          {providers.map((provider) => (
-            <option key={provider.id} value={provider.id}>
-              {provider.displayName}
-            </option>
-          ))}
-          {providers.some(({ id }) => id === selectedProvider) ? null : (
-            <option value={selectedProvider}>{selectedProvider}</option>
-          )}
-        </select>
-      </label>
-      <label htmlFor={codeHostProviderInputId}>
-        {t('codeHostProviderReference')}
-        <Input
-          id={codeHostProviderInputId}
-          value={codeHostProvider}
-          onChange={(event) => onSelectCodeHostProvider(event.currentTarget.value)}
-        />
-      </label>
-      <label className={`${css.checkboxLabel} ${css.fullWidth}`}>
-        <input
-          type="checkbox"
-          checked={allowWorkflowChanges}
-          onChange={(event) => onAllowWorkflowChanges(event.currentTarget.checked)}
-        />
-        {t('allowWorkflowChanges')}
-      </label>
-      <div className={css.fullWidth}>
-        <Button size="sm" variant="outline" onClick={() => void onOpenSettings()}>
-          {t('openDshSettings')}
-        </Button>
-      </div>
-      <p className={`${css.notice} ${css.fullWidth}`}>{t('providerSettingsOwnership')}</p>
-      {activeProvider === undefined ? (
-        <p className={`${css.gap} ${css.fullWidth}`}>{t('configureHint')}</p>
-      ) : (
-        <ProviderCard
-          provider={activeProvider}
-          test={tests[activeProvider.id]}
-          credentials={credentials}
-          onTest={() => testProvider(activeProvider)}
-          onSetCredential={onSetCredential}
-          onUnsetCredential={onUnsetCredential}
-          t={t}
-        />
-      )}
-    </fieldset>
+    <>
+      <fieldset>
+        <legend>{t('providerSection')}</legend>
+        <label>
+          {t('provider')}
+          <select value={selectedProvider} onChange={(event) => onSelectProvider(event.currentTarget.value)}>
+            {providers.map((provider) => (
+              <option key={provider.id} value={provider.id}>
+                {provider.displayName}
+              </option>
+            ))}
+            {providers.some(({ id }) => id === selectedProvider) ? null : (
+              <option value={selectedProvider}>{selectedProvider}</option>
+            )}
+          </select>
+        </label>
+        <label className={`${css.checkboxLabel} ${css.fullWidth}`}>
+          <input
+            type="checkbox"
+            checked={allowWorkflowChanges}
+            onChange={(event) => onAllowWorkflowChanges(event.currentTarget.checked)}
+          />
+          {t('allowWorkflowChanges')}
+        </label>
+        <div className={css.fullWidth}>
+          <Button size="sm" variant="outline" onClick={() => void onOpenSettings()}>
+            {t('openDshSettings')}
+          </Button>
+        </div>
+        <p className={`${css.notice} ${css.fullWidth}`}>{t('providerSettingsOwnership')}</p>
+        {activeProvider === undefined ? (
+          <p className={`${css.gap} ${css.fullWidth}`}>{t('configureHint')}</p>
+        ) : (
+          <ProviderCard
+            provider={activeProvider}
+            test={tests[activeProvider.id]}
+            credentials={credentials}
+            onTest={() => testProvider(activeProvider)}
+            onSetCredential={onSetCredential}
+            onUnsetCredential={onUnsetCredential}
+            t={t}
+          />
+        )}
+      </fieldset>
+      <fieldset>
+        <legend>{t('codeHostProviderSection')}</legend>
+        <label htmlFor={codeHostProviderInputId} className={css.fullWidth}>
+          {t('codeHostProviderReference')}
+          <Input
+            id={codeHostProviderInputId}
+            value={codeHostProvider}
+            onChange={(event) => onSelectCodeHostProvider(event.currentTarget.value)}
+          />
+        </label>
+        {codeHostProvider === '' ? (
+          <p className={`${css.gap} ${css.fullWidth}`}>{t('codeHostConfigureHint')}</p>
+        ) : activeCodeHostProvider === undefined ? (
+          <p className={`${css.gap} ${css.fullWidth}`}>{t('configureHint')}</p>
+        ) : (
+          <ProviderCard
+            provider={activeCodeHostProvider}
+            test={undefined}
+            canTest={false}
+            credentials={credentials}
+            onTest={() => Promise.resolve()}
+            onSetCredential={onSetCredential}
+            onUnsetCredential={onUnsetCredential}
+            t={t}
+          />
+        )}
+      </fieldset>
+    </>
   )
 }
 
 function ProviderCard({
   provider,
   test,
+  canTest = true,
   credentials,
   onTest,
   onSetCredential,
@@ -138,6 +163,7 @@ function ProviderCard({
 }: {
   readonly provider: Provider
   readonly test: ProviderTestResult | 'testing' | undefined
+  readonly canTest?: boolean
   readonly credentials: Record<string, CredentialInfo> | undefined
   readonly onTest: () => Promise<void>
   readonly onSetCredential: (ref: string, value: string) => Promise<void>
@@ -189,14 +215,16 @@ function ProviderCard({
           ))}
         </>
       )}
-      <Button
-        size="sm"
-        variant="outline"
-        disabled={provider.availability !== 'available' || test === 'testing'}
-        onClick={() => void onTest()}
-      >
-        {t('testConnection')}
-      </Button>
+      {canTest ? (
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={provider.availability !== 'available' || test === 'testing'}
+          onClick={() => void onTest()}
+        >
+          {t('testConnection')}
+        </Button>
+      ) : null}
       {test === undefined || test === 'testing' ? null : (
         <p role="status" className={test.status === 'ready' ? css.success : css.error}>
           {t(test.status === 'ready' ? 'testReady' : 'testFailed')}

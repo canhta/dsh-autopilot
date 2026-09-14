@@ -13,7 +13,8 @@ import {
   type PullRequestReceipt,
   pullRequestId,
 } from '../../code-host.js'
-import { type McpTools, type ResolvedMcpTools, resolveMcpTools } from '../../mcp/index.js'
+import { type McpTools, probeMcpLookup, type ResolvedMcpTools, resolveMcpTools } from '../../mcp/index.js'
+import type { ProviderSetupContribution } from '../../web.js'
 import { githubCodeHostMcpContracts } from './contracts.js'
 import type { GitHubPullRequest } from './schemas.js'
 import {
@@ -45,6 +46,9 @@ export async function registerGitHubCodeHostProvider(ctx: Context): Promise<() =
     },
   })
   const registeredSettings = settings
+  const disposeSetup = ctx
+    .get('autopilotWebContributions')
+    ?.registerCodeHostProvider(codeHostSetup(ctx, registeredSettings))
   let active:
     | {
         settings: Readonly<GitHubCodeHostSettings>
@@ -148,11 +152,50 @@ export async function registerGitHubCodeHostProvider(ctx: Context): Promise<() =
     stopTools()
     await queue
     await withdraw()
+    disposeSetup?.()
   }
 }
 
 export async function apply(ctx: Context): Promise<void> {
   await ctx.effect(() => registerGitHubCodeHostProvider(ctx), 'dsh-autopilot-github-code-host.mcp')
+}
+
+const LOOKUP_PROBE_TTL_MS = 30_000
+const LOOKUP_PROBE_TIMEOUT_MS = 5_000
+
+function codeHostSetup(ctx: Context, settings: { get(): Readonly<GitHubCodeHostSettings> }): ProviderSetupContribution {
+  let cached: { at: number; result: Awaited<ReturnType<typeof probeMcpLookup>> } | undefined
+  return {
+    providerId: 'github',
+    displayName: 'GitHub via official MCP',
+    configurationNamespace: 'dsh-autopilot-github-code-host',
+    async view(signal) {
+      const value = settings.get()
+      return {
+        status: 'available',
+        mcpServerName: value.mcpServerName,
+        resources: [
+          { label: 'Repository', value: [value.repositoryOwner, value.repositoryName].filter(Boolean).join('/') },
+          { label: 'Repository id', value: value.repositoryId },
+          { label: 'Binding id', value: value.bindingId },
+        ],
+        credentialRefs: [],
+        lookup: await cachedLookup(value.mcpServerName, signal),
+      }
+    },
+  }
+
+  async function cachedLookup(serverName: string, signal?: AbortSignal) {
+    const now = Date.now()
+    if (cached !== undefined && now - cached.at < LOOKUP_PROBE_TTL_MS) return cached.result
+    const bounded =
+      signal === undefined
+        ? AbortSignal.timeout(LOOKUP_PROBE_TIMEOUT_MS)
+        : AbortSignal.any([signal, AbortSignal.timeout(LOOKUP_PROBE_TIMEOUT_MS)])
+    const result = await probeMcpLookup(ctx, serverName, githubCodeHostMcpContracts, 'readIdentity', bounded)
+    cached = { at: now, result }
+    return result
+  }
 }
 
 function createProvider(

@@ -82,10 +82,12 @@ export const en = {
   settingsIntro:
     'Choose the installed tracker binding and operational limits. Provider credentials remain in DSH MCP connections.',
   providerSection: 'Provider & project',
+  codeHostProviderSection: 'Code host provider',
   policySection: 'Schedule & capacity',
   budgetSection: 'Budget',
   provider: 'Tracker provider',
   codeHostProviderReference: 'Code host provider reference',
+  codeHostConfigureHint: 'Enter the code host provider reference above (for example, "github") to bind it.',
   allowWorkflowChanges: 'Allow provider-owned workflow file changes',
   providerSettingsOwnership:
     'Project, binding, repository, mapping values and the official MCP server connection all live in DSH Settings, not here. Autopilot stores only which MCP server name to use and never asks for the vendor token.',

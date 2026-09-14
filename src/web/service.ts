@@ -13,7 +13,15 @@ import {
   type RunDetailView,
   type WorktreeView,
 } from './contract.js'
-import { detailOf, integrationViews, matchesQuery, providerNames, providerViews, summaryOf } from './projection.js'
+import {
+  codeHostProviderViews,
+  detailOf,
+  integrationViews,
+  matchesQuery,
+  providerNames,
+  providerViews,
+  summaryOf,
+} from './projection.js'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -27,6 +35,7 @@ export class AutopilotWeb extends Service {
     'admission',
     'autopilotConfig',
     'tracker',
+    'codeHost',
     'autopilotReconciliation',
     'autopilotWebContributions',
   ]
@@ -129,6 +138,12 @@ export class AutopilotWeb extends Service {
       providers: await providerViews(
         registrations,
         settings.trackerProvider,
+        this.ctx.autopilotWebContributions,
+        signal,
+      ),
+      codeHostProviders: await codeHostProviderViews(
+        this.ctx.codeHost.providerRegistrations(),
+        settings.codeHostProvider,
         this.ctx.autopilotWebContributions,
         signal,
       ),
