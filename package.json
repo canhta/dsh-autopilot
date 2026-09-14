@@ -1,6 +1,6 @@
 {
   "name": "@canhta/dsh-autopilot",
-  "version": "0.1.0-alpha.2",
+  "version": "0.1.0-alpha.3",
   "description": "Turn approved tracker tickets into review-ready pull requests with DeepSeek Harness.",
   "type": "module",
   "main": "./lib/index.js",
