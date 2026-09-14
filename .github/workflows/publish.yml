@@ -1,0 +1,55 @@
+# Publishes @canhta/dsh-autopilot to the npm registry when a GitHub Release is created.
+# The release tag's commit must already carry the intended package.json version; bump and
+# push that first, then create the GitHub Release from that commit.
+name: Publish npm package
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: latest
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
+
+  publish-npm:
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: latest
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org/
+      - run: pnpm install --frozen-lockfile
+      - name: Determine the npm dist-tag from package.json's version
+        id: tag
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [[ "$version" == *-* ]]; then
+            tag=$(echo "$version" | sed -E 's/^[^-]+-([A-Za-z]+).*/\1/')
+          else
+            tag=latest
+          fi
+          echo "Publishing $version with dist-tag: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - run: pnpm publish --access public --tag ${{ steps.tag.outputs.tag }} --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
