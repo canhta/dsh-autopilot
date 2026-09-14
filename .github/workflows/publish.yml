@@ -28,6 +28,9 @@ jobs:
   publish-npm:
     needs: verify
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for npm Trusted Publishing (OIDC) - no NPM_TOKEN needed
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -51,5 +54,3 @@ jobs:
           echo "Publishing $version with dist-tag: $tag"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - run: pnpm publish --access public --tag ${{ steps.tag.outputs.tag }} --no-git-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
