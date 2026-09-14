@@ -6,6 +6,9 @@ name: Publish npm package
 on:
   release:
     types: [created]
+  workflow_dispatch: {} # manual retry escape hatch; also lets a permissions/config fix take effect
+                        # immediately, since a re-run of an existing release-triggered run reuses that
+                        # run's original workflow snapshot rather than picking up a newer commit
 
 permissions:
   contents: read
