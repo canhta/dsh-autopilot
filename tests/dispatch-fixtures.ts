@@ -248,6 +248,9 @@ export async function createTargetRepository(root: string): Promise<string> {
   execFileSync('git', ['init', '--initial-branch=main'], { cwd: repository })
   execFileSync('git', ['config', 'user.name', 'Fixture User'], { cwd: repository })
   execFileSync('git', ['config', 'user.email', 'fixture@example.invalid'], { cwd: repository })
+  // Fixture content must round-trip byte-for-byte through checkouts regardless of the operator's
+  // global core.autocrlf; worktrees created from this repository inherit this local config.
+  execFileSync('git', ['config', 'core.autocrlf', 'false'], { cwd: repository })
   await writeFile(join(repository, 'README.md'), 'fixture\n')
   execFileSync('git', ['add', 'README.md'], { cwd: repository })
   execFileSync('git', ['commit', '-m', 'fixture'], { cwd: repository })

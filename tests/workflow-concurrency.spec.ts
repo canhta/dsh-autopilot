@@ -50,10 +50,12 @@ describe('workflow execution concurrency', () => {
 
     try {
       await ctx.autopilotWorkflow.reconcile('startup')
-      await expect.poll(() => requests).toBe(2)
+      // Dispatch allocates a real git worktree per run before the fixture adapter blocks on
+      // `release`; under full-suite load that startup work can take longer than the default 1s poll.
+      await expect.poll(() => requests, { timeout: 10_000 }).toBe(2)
 
       release.resolve()
-      await expect.poll(() => requests).toBeGreaterThanOrEqual(3)
+      await expect.poll(() => requests, { timeout: 10_000 }).toBeGreaterThanOrEqual(3)
     } finally {
       release.resolve()
     }

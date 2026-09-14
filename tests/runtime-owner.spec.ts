@@ -32,9 +32,18 @@ describe('runtime-store ownership', () => {
     const ctx = await bootFixture(root, new ControlledAdapter())
     contexts.splice(contexts.indexOf(ctx), 1)
 
+    // Spawn Node directly against vitest's JS entry point rather than the node_modules/.bin shim:
+    // the extensionless POSIX shim isn't natively executable on Windows (ENOENT), and the .CMD
+    // counterpart requires shell:true, which is unnecessary risk for a fixed, literal argument list.
     const second = spawnSync(
-      join(process.cwd(), 'node_modules/.bin/vitest'),
-      ['run', 'tests/fixtures/runtime-owner-process.spec.ts', '--maxWorkers=1', '--pool=threads'],
+      process.execPath,
+      [
+        join(process.cwd(), 'node_modules', 'vitest', 'vitest.mjs'),
+        'run',
+        'tests/fixtures/runtime-owner-process.spec.ts',
+        '--maxWorkers=1',
+        '--pool=threads',
+      ],
       {
         cwd: process.cwd(),
         env: { ...process.env, DSH_AUTOPILOT_OWNER_STORE: join(root, 'state.sqlite') },

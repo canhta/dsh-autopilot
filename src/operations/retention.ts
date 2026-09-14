@@ -83,7 +83,7 @@ export class RetentionMaintenance {
       .filter((worktree) => inside(managedRoot, resolve(worktree.path)) && !ownedPaths.has(resolve(worktree.path)))
       .map(
         (worktree): OrphanWorktreeFact => ({
-          path: worktree.path,
+          path: resolve(worktree.path),
           ...(worktree.branch === undefined ? {} : { branch: worktree.branch }),
           state: 'orphan-reconciliation-required',
         }),

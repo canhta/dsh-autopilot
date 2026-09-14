@@ -20,6 +20,11 @@ import {
 } from './dispatch-fixtures.js'
 import { Deferred, disposeContext, fixtureExecutionSettings, mountExecutionHostServices } from './dsh-fixtures.js'
 
+/** `git worktree list` always prints forward-slash paths, even on Windows; normalize before comparing. */
+function gitPath(path: string): string {
+  return path.replaceAll('\\', '/')
+}
+
 async function completedFixture(prefix: string, options: { now?: () => number } = {}) {
   const root = await mkdtemp(join(tmpdir(), prefix))
   temporaryDirectories.push(root)
@@ -180,7 +185,7 @@ describe('retained worktree operations', () => {
     await expect(ctx.autopilotOperations.removeWorktree(preview.previewId)).rejects.toThrow(/cleanup rejected/i)
     expect(
       execFileSync('git', ['worktree', 'list'], { cwd: run.execution.targetRepository, encoding: 'utf8' }),
-    ).toContain(run.execution.worktreePath)
+    ).toContain(gitPath(run.execution.worktreePath))
   })
 
   it('normalizes provider failures to an unknown PR disposition', async () => {
@@ -263,7 +268,7 @@ describe('retained worktree operations', () => {
     })
     expect(
       execFileSync('git', ['worktree', 'list'], { cwd: run.execution.targetRepository, encoding: 'utf8' }),
-    ).toContain(run.execution.worktreePath)
+    ).toContain(gitPath(run.execution.worktreePath))
   })
 
   it('keeps inspection non-authorizing and rejects a stale explicit cleanup preview through the Web command owner', async () => {
@@ -305,7 +310,7 @@ describe('retained worktree operations', () => {
     expect(commands.status(requestId)?.message).toMatch(/fresh cleanup preview/i)
     expect(
       execFileSync('git', ['worktree', 'list'], { cwd: run.execution.targetRepository, encoding: 'utf8' }),
-    ).toContain(run.execution.worktreePath)
+    ).toContain(gitPath(run.execution.worktreePath))
     await commands.dispose()
   })
 
@@ -342,7 +347,7 @@ describe('retained worktree operations', () => {
     )
     expect(
       execFileSync('git', ['worktree', 'list'], { cwd: run.execution.targetRepository, encoding: 'utf8' }),
-    ).not.toContain(run.execution.worktreePath)
+    ).not.toContain(gitPath(run.execution.worktreePath))
     await commands.dispose()
   })
 
@@ -400,52 +405,63 @@ describe('retained worktree operations', () => {
     })
   })
 
-  it('keeps a pending cleanup intent when path inspection fails for a reason other than absence', async () => {
-    const { root, ctx, run } = await completedFixture('dsh-autopilot-cleanup-lookup-failure-')
-    contexts.splice(contexts.indexOf(ctx), 1)
-    await disposeContext(ctx)
-    const nonDirectory = join(root, 'not-a-directory')
-    await writeFile(nonDirectory, 'controlled lookup failure\n')
-    const pendingPath = join(nonDirectory, 'worktree')
-    withDatabase(join(root, 'state.sqlite'), (database) => {
-      const row = database.prepare('SELECT value FROM u_autopilot_maintenance_state WHERE key = ?').get('primary') as {
-        value: string
-      }
-      const state = JSON.parse(row.value) as Record<string, unknown>
-      state.pendingCleanup = {
-        operationId: '22222222-2222-4222-8222-222222222222',
-        runId: run.runId,
-        worktreePath: pendingPath,
-        previewFingerprint: 'b'.repeat(64),
-        startedAt: '2026-09-12T00:00:00.000Z',
-      }
-      database
-        .prepare('UPDATE u_autopilot_maintenance_state SET value = ? WHERE key = ?')
-        .run(JSON.stringify(state), 'primary')
-    })
+  // Simulates the failure by writing a file where a directory is expected, then addressing a path
+  // beneath it. POSIX fs.access() reports ENOTDIR for that; Windows reports ENOENT, which pathExists()
+  // (by design) treats as ordinary absence instead of rethrowing, so the scenario this test exercises
+  // cannot be reproduced there.
+  it.skipIf(process.platform === 'win32')(
+    'keeps a pending cleanup intent when path inspection fails for a reason other than absence',
+    async () => {
+      const { root, ctx, run } = await completedFixture('dsh-autopilot-cleanup-lookup-failure-')
+      contexts.splice(contexts.indexOf(ctx), 1)
+      await disposeContext(ctx)
+      const nonDirectory = join(root, 'not-a-directory')
+      await writeFile(nonDirectory, 'controlled lookup failure\n')
+      const pendingPath = join(nonDirectory, 'worktree')
+      withDatabase(join(root, 'state.sqlite'), (database) => {
+        const row = database
+          .prepare('SELECT value FROM u_autopilot_maintenance_state WHERE key = ?')
+          .get('primary') as {
+          value: string
+        }
+        const state = JSON.parse(row.value) as Record<string, unknown>
+        state.pendingCleanup = {
+          operationId: '22222222-2222-4222-8222-222222222222',
+          runId: run.runId,
+          worktreePath: pendingPath,
+          previewFingerprint: 'b'.repeat(64),
+          startedAt: '2026-09-12T00:00:00.000Z',
+        }
+        database
+          .prepare('UPDATE u_autopilot_maintenance_state SET value = ? WHERE key = ?')
+          .run(JSON.stringify(state), 'primary')
+      })
 
-    const restarted = await mountExecutionHostServices(join(root, 'state.sqlite'), join(root, 'sessions'), {
-      'dsh-autopilot': {
-        trackerProvider: 'fixture',
-        ...fixtureExecutionSettings(run.execution.targetRepository, join(root, 'worktrees')),
-      },
-    })
-    contexts.push(restarted)
-    await restarted.plugin(Tracker)
-    await restarted.plugin(AutopilotConfig)
-    await restarted.plugin(RuntimeOwner, { authoritativeStorePath: join(root, 'state.sqlite') })
-    await restarted.plugin(Admission)
-    await restarted.plugin(PullRequestDispositionRegistry)
+      const restarted = await mountExecutionHostServices(join(root, 'state.sqlite'), join(root, 'sessions'), {
+        'dsh-autopilot': {
+          trackerProvider: 'fixture',
+          ...fixtureExecutionSettings(run.execution.targetRepository, join(root, 'worktrees')),
+        },
+      })
+      contexts.push(restarted)
+      await restarted.plugin(Tracker)
+      await restarted.plugin(AutopilotConfig)
+      await restarted.plugin(RuntimeOwner, { authoritativeStorePath: join(root, 'state.sqlite') })
+      await restarted.plugin(Admission)
+      await restarted.plugin(PullRequestDispositionRegistry)
 
-    await expect(restarted.plugin(AutopilotOperations)).rejects.toMatchObject({ code: 'ENOTDIR' })
-    withDatabase(join(root, 'state.sqlite'), (database) => {
-      const row = database.prepare('SELECT value FROM u_autopilot_maintenance_state WHERE key = ?').get('primary') as {
-        value: string
-      }
-      const state = JSON.parse(row.value) as { pendingCleanup?: { worktreePath?: string } }
-      expect(state.pendingCleanup?.worktreePath).toBe(pendingPath)
-    })
-  })
+      await expect(restarted.plugin(AutopilotOperations)).rejects.toMatchObject({ code: 'ENOTDIR' })
+      withDatabase(join(root, 'state.sqlite'), (database) => {
+        const row = database
+          .prepare('SELECT value FROM u_autopilot_maintenance_state WHERE key = ?')
+          .get('primary') as {
+          value: string
+        }
+        const state = JSON.parse(row.value) as { pendingCleanup?: { worktreePath?: string } }
+        expect(state.pendingCleanup?.worktreePath).toBe(pendingPath)
+      })
+    },
+  )
 
   it('projects unowned registered worktrees as orphans requiring reconciliation', async () => {
     const { root, ctx, run } = await completedFixture('dsh-autopilot-cleanup-orphan-')

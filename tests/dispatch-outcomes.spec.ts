@@ -304,9 +304,17 @@ describe('durable fixture dispatch: terminal outcomes', () => {
     const repository = await createTargetRepository(root)
     await mkdir(join(root, 'worktrees'))
     await mkdir(join(root, 'sessions'))
+    // Spawn Node directly against vitest's JS entry point: the node_modules/.bin shim is a POSIX
+    // shell script and isn't natively executable on Windows (ENOENT there instead of a real exit).
     const crash = spawnSync(
-      join(process.cwd(), 'node_modules/.bin/vitest'),
-      ['run', 'tests/fixtures/crash-dispatch.spec.ts', '--maxWorkers=1', '--pool=threads'],
+      process.execPath,
+      [
+        join(process.cwd(), 'node_modules', 'vitest', 'vitest.mjs'),
+        'run',
+        'tests/fixtures/crash-dispatch.spec.ts',
+        '--maxWorkers=1',
+        '--pool=threads',
+      ],
       {
         cwd: process.cwd(),
         env: {

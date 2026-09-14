@@ -57,7 +57,7 @@ describe('admission reconciliation and policy', () => {
           execution: {
             attempt: 1,
             sessionId: expect.stringMatching(/^autopilot-run_/),
-            worktreePath: expect.stringMatching(/\/run_[a-f0-9]{32}$/),
+            worktreePath: expect.stringMatching(/[/\\]run_[a-f0-9]{32}$/),
           },
           budget: { capTokens: 100, reservedTokens: 60 },
         },
