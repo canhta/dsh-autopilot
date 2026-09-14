@@ -88,13 +88,11 @@ export const en = {
   codeHostProviderReference: 'Code host provider reference',
   allowWorkflowChanges: 'Allow provider-owned workflow file changes',
   providerSettingsOwnership:
-    'Project, binding, repository and mapping values stay in each provider’s registered DSH Settings namespace. Open DSH settings to edit them.',
+    'Project, binding, repository, mapping values and the official MCP server connection all live in DSH Settings, not here. Autopilot stores only which MCP server name to use and never asks for the vendor token.',
   providerAvailable: 'Available',
   providerUnavailable: 'Unavailable',
   providerConfigUnknown: 'Configuration is checked on demand',
   configurationNamespace: 'Settings namespace',
-  mcpNotice:
-    'Connect the matching official MCP server in DSH. Autopilot stores only its binding name and never asks for the vendor token.',
   testConnection: 'Test connection',
   testReady: 'Connection ready',
   testFailed: 'Connection test failed',

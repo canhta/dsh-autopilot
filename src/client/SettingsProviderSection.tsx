@@ -110,7 +110,6 @@ export function ProviderConnectionSection({
         </Button>
       </div>
       <p className={`${css.notice} ${css.fullWidth}`}>{t('providerSettingsOwnership')}</p>
-      <p className={css.notice}>{t('mcpNotice')}</p>
       {activeProvider === undefined ? (
         <p className={`${css.gap} ${css.fullWidth}`}>{t('configureHint')}</p>
       ) : (

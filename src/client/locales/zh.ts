@@ -84,12 +84,11 @@ export const zh = {
   codeHostProviderReference: '代码托管提供方引用',
   allowWorkflowChanges: '允许提供方拥有的工作流文件更改',
   providerSettingsOwnership:
-    '项目、绑定、仓库和映射值保留在各提供方注册的 DSH 设置命名空间中。请打开 DSH 设置进行编辑。',
+    '项目、绑定、仓库、映射值以及官方 MCP 服务器连接均保留在 DSH 设置中，而非此处。Autopilot 只保存要使用的 MCP 服务器名称，绝不会索取提供方令牌。',
   providerAvailable: '可用',
   providerUnavailable: '不可用',
   providerConfigUnknown: '按需检查配置',
   configurationNamespace: '设置命名空间',
-  mcpNotice: '请在 DSH 中连接相应的官方 MCP 服务器。Autopilot 只保存绑定名称，绝不会索取提供方令牌。',
   testConnection: '测试连接',
   testReady: '连接可用',
   testFailed: '连接测试失败',
