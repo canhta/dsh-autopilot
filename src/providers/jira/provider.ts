@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
-import { createMcpTraversalCursorCodec, type McpTools, mountMcpTracker } from '../../mcp/index.js'
+import { createMcpTraversalCursorCodec, type McpTools, mountMcpTracker, probeMcpLookup } from '../../mcp/index.js'
 import {
   TRACKER_INTERFACE_VERSION,
   type TrackerDeliveryObservation,
@@ -43,7 +43,7 @@ export async function registerJiraProvider(ctx: Context): Promise<() => Promise<
     },
   })
   const registeredSettings = settings
-  const setup = ctx.get('autopilotWebContributions')?.registerProvider(jiraSetup(registeredSettings))
+  const setup = ctx.get('autopilotWebContributions')?.registerProvider(jiraSetup(ctx, registeredSettings))
   try {
     const unmount = await mountMcpTracker(ctx, {
       settings: registeredSettings,
@@ -60,12 +60,16 @@ export async function registerJiraProvider(ctx: Context): Promise<() => Promise<
   }
 }
 
-function jiraSetup(settings: { get(): Readonly<JiraSettings> }): ProviderSetupContribution {
+const LOOKUP_PROBE_TTL_MS = 30_000
+const LOOKUP_PROBE_TIMEOUT_MS = 5_000
+
+function jiraSetup(ctx: Context, settings: { get(): Readonly<JiraSettings> }): ProviderSetupContribution {
+  let cached: { at: number; result: Awaited<ReturnType<typeof probeMcpLookup>> } | undefined
   return {
     providerId: 'jira',
     displayName: 'Jira Cloud via Atlassian MCP',
     configurationNamespace: 'dsh-autopilot-jira',
-    view() {
+    async view(signal) {
       const value = settings.get()
       return {
         status: 'available',
@@ -77,12 +81,21 @@ function jiraSetup(settings: { get(): Readonly<JiraSettings> }): ProviderSetupCo
         ],
         credentialRefs:
           value.webhookSecretRef === '' ? [] : [{ label: 'Inbound webhook secret', ref: value.webhookSecretRef }],
-        lookup: {
-          status: 'unavailable',
-          reason: 'DSH does not expose Atlassian MCP project or label lookup to Client plugins at this version.',
-        },
+        lookup: await cachedLookup(value.mcpServerName, signal),
       }
     },
+  }
+
+  async function cachedLookup(serverName: string, signal?: AbortSignal) {
+    const now = Date.now()
+    if (cached !== undefined && now - cached.at < LOOKUP_PROBE_TTL_MS) return cached.result
+    const bounded =
+      signal === undefined
+        ? AbortSignal.timeout(LOOKUP_PROBE_TIMEOUT_MS)
+        : AbortSignal.any([signal, AbortSignal.timeout(LOOKUP_PROBE_TIMEOUT_MS)])
+    const result = await probeMcpLookup(ctx, serverName, jiraMcpContracts, 'readIdentity', bounded)
+    cached = { at: now, result }
+    return result
   }
 }
 

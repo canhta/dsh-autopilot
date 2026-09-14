@@ -39,6 +39,7 @@ export function ProviderConnectionSection({
   const [tests, setTests] = useState<Record<string, ProviderTestResult | 'testing'>>({})
   const testRequests = useRef(new Map<string, AbortController>())
   const codeHostProviderInputId = useId()
+  const activeProvider = providers.find((provider) => provider.id === selectedProvider)
   useEffect(
     () => () => {
       for (const request of testRequests.current.values()) request.abort()
@@ -110,29 +111,25 @@ export function ProviderConnectionSection({
       </div>
       <p className={`${css.notice} ${css.fullWidth}`}>{t('providerSettingsOwnership')}</p>
       <p className={css.notice}>{t('mcpNotice')}</p>
-      <div className={css.providerGrid}>
-        {providers.map((provider) => (
-          <ProviderCard
-            key={provider.id}
-            provider={provider}
-            selected={provider.id === selectedProvider}
-            test={tests[provider.id]}
-            credentials={credentials}
-            onTest={() => testProvider(provider)}
-            onSetCredential={onSetCredential}
-            onUnsetCredential={onUnsetCredential}
-            t={t}
-          />
-        ))}
-      </div>
-      {providers.length === 0 ? <p className={css.gap}>{t('configureHint')}</p> : null}
+      {activeProvider === undefined ? (
+        <p className={`${css.gap} ${css.fullWidth}`}>{t('configureHint')}</p>
+      ) : (
+        <ProviderCard
+          provider={activeProvider}
+          test={tests[activeProvider.id]}
+          credentials={credentials}
+          onTest={() => testProvider(activeProvider)}
+          onSetCredential={onSetCredential}
+          onUnsetCredential={onUnsetCredential}
+          t={t}
+        />
+      )}
     </fieldset>
   )
 }
 
 function ProviderCard({
   provider,
-  selected,
   test,
   credentials,
   onTest,
@@ -141,7 +138,6 @@ function ProviderCard({
   t,
 }: {
   readonly provider: Provider
-  readonly selected: boolean
   readonly test: ProviderTestResult | 'testing' | undefined
   readonly credentials: Record<string, CredentialInfo> | undefined
   readonly onTest: () => Promise<void>
@@ -150,7 +146,7 @@ function ProviderCard({
   readonly t: AutopilotTranslate
 }): ReactNode {
   return (
-    <article className={css.providerCard} data-selected={selected ? 'true' : undefined}>
+    <article className={`${css.providerCard} ${css.fullWidth}`}>
       <div>
         <h3>{provider.displayName}</h3>
         <Tag tone={provider.availability === 'available' ? 'success' : 'danger'}>

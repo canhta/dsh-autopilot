@@ -19,7 +19,7 @@ describe('Autopilot Web Host contract', () => {
     await ctx.plugin(AutopilotWebContributions)
     await ctx.plugin(AutopilotWeb)
 
-    const snapshot = ctx.autopilotWeb.operations({ offset: 0, limit: 1, search: 'external provider' })
+    const snapshot = await ctx.autopilotWeb.operations({ offset: 0, limit: 1, search: 'external provider' })
     expect(snapshot.providers).toEqual([
       expect.objectContaining({
         id: 'fixture',
@@ -79,7 +79,7 @@ describe('Autopilot Web Host contract', () => {
       expect(ctx.autopilotWeb.commandStatus(request.requestId)).toMatchObject({ status: 'succeeded' })
     })
     expect(ctx.admission.snapshot().runs[0]).toMatchObject({ state: 'paused', pause: { operatorHold: true } })
-    expect(ctx.autopilotWeb.operations({ offset: 0, limit: 50 }).runs.items[0]?.actions).toEqual([
+    expect((await ctx.autopilotWeb.operations({ offset: 0, limit: 50 })).runs.items[0]?.actions).toEqual([
       'resume-run',
       'cancel-run',
     ])
@@ -112,7 +112,7 @@ describe('Autopilot Web Host contract', () => {
       cancellation: { requestId: request.requestId, from: 'queued' },
     })
     if (cancelled?.state !== 'cancelled') throw new Error('expected a cancelled run')
-    expect(ctx.autopilotWeb.operations({ offset: 0, limit: 50, states: ['cancelled'] }).runs.items).toEqual([
+    expect((await ctx.autopilotWeb.operations({ offset: 0, limit: 50, states: ['cancelled'] })).runs.items).toEqual([
       expect.objectContaining({
         runId: queued.runId,
         lifecycle: 'cancelled',
@@ -150,7 +150,9 @@ describe('Autopilot Web Host contract', () => {
       runId: implementing.runId,
     }
 
-    expect(ctx.autopilotWeb.operations({ offset: 0, limit: 50 }).runs.items[0]?.actions).not.toContain('cancel-run')
+    expect((await ctx.autopilotWeb.operations({ offset: 0, limit: 50 })).runs.items[0]?.actions).not.toContain(
+      'cancel-run',
+    )
     await expect(ctx.autopilotWeb.command(request)).rejects.toThrow(/cannot be cancelled from implementing/)
     expect(ctx.admission.operatorCommand(request.requestId)).toBeUndefined()
 
@@ -159,7 +161,7 @@ describe('Autopilot Web Host contract', () => {
       { kind: 'blocked', summary: 'A human decision is required.', evidence: ['No safe default exists.'] },
       { kind: 'known', tokens: 3 },
     )
-    expect(ctx.autopilotWeb.operations({ offset: 0, limit: 50 }).runs.items[0]?.actions).toEqual(['cancel-run'])
+    expect((await ctx.autopilotWeb.operations({ offset: 0, limit: 50 })).runs.items[0]?.actions).toEqual(['cancel-run'])
   })
 
   it('reports scheduler pause success when the durable gate changes without a Dispatch service', async () => {

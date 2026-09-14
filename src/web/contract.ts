@@ -22,6 +22,12 @@ export const operationsQuerySchema = z.object({
 })
 export type OperationsQuery = z.infer<typeof operationsQuerySchema>
 
+export const providerLookupSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('available') }),
+  z.object({ status: z.literal('unavailable'), reason: z.string() }),
+])
+export type ProviderLookupView = z.infer<typeof providerLookupSchema>
+
 export const providerViewSchema = z.object({
   id: z.string(),
   displayName: z.string(),
@@ -34,10 +40,7 @@ export const providerViewSchema = z.object({
       mcpServerName: z.string(),
       resources: z.array(z.object({ label: z.string(), value: z.string() })),
       credentialRefs: z.array(z.object({ label: z.string(), ref: z.string() })),
-      lookup: z.discriminatedUnion('status', [
-        z.object({ status: z.literal('available') }),
-        z.object({ status: z.literal('unavailable'), reason: z.string() }),
-      ]),
+      lookup: providerLookupSchema,
     }),
     z.object({ status: z.literal('unavailable'), reason: z.string() }),
   ]),

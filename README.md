@@ -80,6 +80,50 @@ Open **Settings → Autopilot** to set the tracker and code-host bindings, sched
 
 Fresh installs keep execution disabled. Before enabling it, select the DSH default Agent preset and model, then configure each provider's DSH Settings namespace and official MCP server in the same profile. Keep vendor OAuth, model keys and tokens in DSH Credentials; Autopilot does not create a second authentication flow.
 
+<details>
+<summary>Connect the GitHub and Jira MCP servers</summary>
+
+Autopilot's providers call the vendor's **official** MCP server through DSH's [`dsh-mcp-client`](https://github.com/deepseek-ai/deepseek-harness/blob/master/packages/mcp/mcp-client/README.md) plugin, not a third-party clone. Add one entry per server to the profile's patch layer (`$DSH_HOME/profiles/<profile>/cordis.patch.yml`), then restart the profile (`dsh --profile web`).
+
+**GitHub** — the official remote server needs no local install or Docker:
+
+```yaml
+- insert:
+    - id: mcp-github
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: github
+        transport: streamable-http
+        url: https://api.githubcopilot.com/mcp/
+        headers:
+          Authorization: !!js '`Bearer ${process.env.GITHUB_TOKEN}`'
+```
+
+Create a token at `github.com/settings/personal-access-tokens/new` with `Contents`, `Issues` and `Pull requests` read/write, then set `GITHUB_TOKEN` in your environment before starting DSH.
+
+**Jira** — the Jira provider's MCP contracts target Atlassian's official **Rovo MCP Server**, not a community Jira MCP server. `serverName` must be `atlassian` (the provider's default):
+
+```yaml
+- insert:
+    - id: mcp-jira
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: atlassian
+        transport: streamable-http
+        # tools=all: Rovo only advertises a "primary" tool subset by default and expects
+        # on-demand discovery, which dsh-mcp-client's one-time tools/list bridge doesn't do.
+        url: https://mcp.atlassian.com/v2/mcp?tools=all
+        headers:
+          Authorization: !!js >-
+            `Basic ${Buffer.from(`${process.env.JIRA_EMAIL}:${process.env.JIRA_API_TOKEN}`).toString('base64')}`
+```
+
+Create an API token at `id.atlassian.com/manage-profile/security/api-tokens`, then set `JIRA_EMAIL` (your Atlassian login) and `JIRA_API_TOKEN`. An org admin must also enable **API token authentication** for the Rovo MCP Server (Atlassian Administration → Rovo → Rovo MCP server → Authentication) — OAuth-only organizations can't use this Basic-auth header form and need a different client integration.
+
+Once connected, each provider's Settings card in Autopilot reports a live `lookup` status instead of a placeholder — a real, cached probe against that provider's declared MCP tools, not a static message.
+
+</details>
+
 For a systemd-managed VPS installation and backup/restore procedure, see [One-VPS operation](docs/deployment.md).
 
 ## Contribute

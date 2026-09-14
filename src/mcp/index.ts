@@ -17,6 +17,7 @@ export {
 } from './definition.js'
 export { decodeMcpJson } from './json.js'
 export { type McpTrackerMountOptions, mountMcpTracker } from './mount.js'
+export { type McpLookupProbeResult, probeMcpLookup } from './probe.js'
 export {
   type McpErrorFactory,
   McpOperationError,

@@ -44,9 +44,9 @@ export class AutopilotWeb extends Service {
   }
 
   /** Return one bounded, detached operations page without ticket bodies, secrets, or Session transcripts. */
-  operations(query: OperationsQuery, signal?: AbortSignal): OperationsSnapshot {
+  async operations(query: OperationsQuery, signal?: AbortSignal): Promise<OperationsSnapshot> {
     signal?.throwIfAborted()
-    return this.snapshot(operationsQuerySchema.parse(query))
+    return await this.snapshot(operationsQuerySchema.parse(query), signal)
   }
 
   /** Return bounded detail for one run; optional integrations contribute only browser-safe projections. */
@@ -112,7 +112,7 @@ export class AutopilotWeb extends Service {
     }
   }
 
-  private snapshot(query: OperationsQuery): OperationsSnapshot {
+  private async snapshot(query: OperationsQuery, signal?: AbortSignal): Promise<OperationsSnapshot> {
     const admission = this.ctx.admission.snapshot()
     const settings = this.ctx.autopilotConfig.get()
     const registrations = this.ctx.tracker.providerRegistrations()
@@ -126,7 +126,12 @@ export class AutopilotWeb extends Service {
       revision: admission.revision,
       fetchedAt: new Date().toISOString(),
       scheduler: admission.scheduler,
-      providers: providerViews(registrations, settings.trackerProvider, this.ctx.autopilotWebContributions),
+      providers: await providerViews(
+        registrations,
+        settings.trackerProvider,
+        this.ctx.autopilotWebContributions,
+        signal,
+      ),
       runs: {
         items: filtered.slice(query.offset, query.offset + query.limit),
         total: filtered.length,

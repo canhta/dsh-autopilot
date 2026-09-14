@@ -14,20 +14,23 @@ export function providerNames(registrations: readonly TrackerProviderRegistratio
   return new Map(registrations.map((provider) => [provider.id, provider.displayName]))
 }
 
-export function providerViews(
+export async function providerViews(
   registrations: readonly TrackerProviderRegistration[],
   selectedId: string,
   contributions: AutopilotWebContributions,
-): ProviderView[] {
+  signal?: AbortSignal,
+): Promise<ProviderView[]> {
   const registeredIds = new Set(registrations.map(({ id }) => String(id)))
-  const views: ProviderView[] = contributions.providerViews().map((provider) => ({
-    id: provider.providerId,
-    displayName: provider.displayName,
-    configurationNamespace: provider.configurationNamespace,
-    selected: provider.providerId === selectedId,
-    availability: registeredIds.has(provider.providerId) ? 'available' : 'unavailable',
-    setup: provider.view(),
-  }))
+  const views: ProviderView[] = await Promise.all(
+    contributions.providerViews().map(async (provider) => ({
+      id: provider.providerId,
+      displayName: provider.displayName,
+      configurationNamespace: provider.configurationNamespace,
+      selected: provider.providerId === selectedId,
+      availability: registeredIds.has(provider.providerId) ? 'available' : 'unavailable',
+      setup: await provider.view(signal),
+    })),
+  )
   for (const provider of registrations)
     if (!views.some(({ id }) => id === provider.id))
       views.push({

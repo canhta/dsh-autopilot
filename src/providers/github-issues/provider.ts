@@ -1,6 +1,6 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SettingsScope } from '@deepseek-ai/dsh-settings'
-import { createMcpTraversalCursorCodec, type McpTools, mountMcpTracker } from '../../mcp/index.js'
+import { createMcpTraversalCursorCodec, type McpTools, mountMcpTracker, probeMcpLookup } from '../../mcp/index.js'
 import {
   TRACKER_INTERFACE_VERSION,
   type TrackerIssueSnapshot,
@@ -43,7 +43,7 @@ export async function registerGitHubIssuesProvider(ctx: Context): Promise<() => 
     },
   })
   const registeredSettings = settings
-  const setup = ctx.get('autopilotWebContributions')?.registerProvider(githubSetup(registeredSettings))
+  const setup = ctx.get('autopilotWebContributions')?.registerProvider(githubSetup(ctx, registeredSettings))
   try {
     const unmount = await mountMcpTracker(ctx, {
       settings: registeredSettings,
@@ -62,12 +62,16 @@ export async function registerGitHubIssuesProvider(ctx: Context): Promise<() => 
   }
 }
 
-function githubSetup(settings: { get(): Readonly<GitHubIssuesSettings> }): ProviderSetupContribution {
+const LOOKUP_PROBE_TTL_MS = 30_000
+const LOOKUP_PROBE_TIMEOUT_MS = 5_000
+
+function githubSetup(ctx: Context, settings: { get(): Readonly<GitHubIssuesSettings> }): ProviderSetupContribution {
+  let cached: { at: number; result: Awaited<ReturnType<typeof probeMcpLookup>> } | undefined
   return {
     providerId: 'github-issues',
     displayName: 'GitHub Issues via official MCP',
     configurationNamespace: 'dsh-autopilot-github-issues',
-    view() {
+    async view(signal) {
       const value = settings.get()
       return {
         status: 'available',
@@ -79,12 +83,21 @@ function githubSetup(settings: { get(): Readonly<GitHubIssuesSettings> }): Provi
         ],
         credentialRefs:
           value.webhookSecretRef === '' ? [] : [{ label: 'Inbound webhook secret', ref: value.webhookSecretRef }],
-        lookup: {
-          status: 'unavailable',
-          reason: 'DSH does not expose GitHub MCP repository or label lookup to Client plugins at this version.',
-        },
+        lookup: await cachedLookup(value.mcpServerName, signal),
       }
     },
+  }
+
+  async function cachedLookup(serverName: string, signal?: AbortSignal) {
+    const now = Date.now()
+    if (cached !== undefined && now - cached.at < LOOKUP_PROBE_TTL_MS) return cached.result
+    const bounded =
+      signal === undefined
+        ? AbortSignal.timeout(LOOKUP_PROBE_TIMEOUT_MS)
+        : AbortSignal.any([signal, AbortSignal.timeout(LOOKUP_PROBE_TIMEOUT_MS)])
+    const result = await probeMcpLookup(ctx, serverName, githubMcpContracts, 'readIdentity', bounded)
+    cached = { at: now, result }
+    return result
   }
 }
 

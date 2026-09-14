@@ -17,7 +17,7 @@ export interface ProviderSetupContribution {
   readonly providerId: string
   readonly displayName: string
   readonly configurationNamespace: string
-  view(): ProviderSetupView
+  view(signal?: AbortSignal): Promise<ProviderSetupView>
 }
 
 declare module '@deepseek-ai/cordis' {
